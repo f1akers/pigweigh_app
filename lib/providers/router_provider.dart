@@ -13,7 +13,13 @@ class AppRoutes {
   static const String splash = '/';
   static const String login = '/login';
   static const String home = '/home';
-  // Add more routes as features are created
+
+  // ── Public routes (no auth required) ──────────────────────────────────────
+  static const String priceHistory = '/price-history';
+
+  // ── Admin routes (auth required) ──────────────────────────────────────────
+  static const String adminSrp = '/admin/srp';
+  static const String adminSrpEncode = '/admin/srp/encode';
 }
 
 /// Central GoRouter instance with auth-based redirects.
@@ -39,11 +45,12 @@ GoRouter router(Ref ref) {
       // Still loading — stay on splash
       if (authState.isLoading) return null;
 
-      const publicRoutes = [AppRoutes.login];
-      final isPublicRoute = publicRoutes.contains(location);
+      // Admin routes require authentication.
+      final isAdminRoute = location.startsWith('/admin');
+      if (isAdminRoute && !isAuth) return AppRoutes.login;
 
-      if (!isAuth && !isPublicRoute) return AppRoutes.login;
-      if (isAuth && isPublicRoute) return AppRoutes.home;
+      // Authenticated admin on login page → redirect to admin home.
+      if (isAuth && location == AppRoutes.login) return AppRoutes.adminSrp;
 
       return null;
     },
@@ -60,6 +67,18 @@ GoRouter router(Ref ref) {
       GoRoute(
         path: AppRoutes.home,
         builder: (_, __) => const _PlaceholderScreen(title: 'Home'),
+      ),
+      GoRoute(
+        path: AppRoutes.priceHistory,
+        builder: (_, __) => const _PlaceholderScreen(title: 'Price History'),
+      ),
+      GoRoute(
+        path: AppRoutes.adminSrp,
+        builder: (_, __) => const _PlaceholderScreen(title: 'SRP Management'),
+      ),
+      GoRoute(
+        path: AppRoutes.adminSrpEncode,
+        builder: (_, __) => const _PlaceholderScreen(title: 'Encode SRP'),
       ),
     ],
 

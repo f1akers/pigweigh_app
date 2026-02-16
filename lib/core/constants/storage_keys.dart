@@ -1,4 +1,4 @@
-/// Keys used for secure storage and Hive boxes.
+/// Keys used for secure storage, Hive boxes, and cache tracking.
 class StorageKeys {
   StorageKeys._();
 
@@ -12,4 +12,12 @@ class StorageKeys {
   // ── Hive Boxes ────────────────────────────────────────────────────────────
   static const String settingsBox = 'settings';
   static const String cacheBox = 'cache';
+  static const String adminCacheBox = 'admin_cache';
+
+  // ── Hive Keys — Admin Auth Cache ──────────────────────────────────────────
+  static const String adminProfile = 'admin_profile';
+  static const String isLoggedIn = 'is_logged_in';
+
+  // ── Hive Keys — Sync Tracking ─────────────────────────────────────────────
+  static const String lastSrpSyncAt = 'last_srp_sync_at';
 }

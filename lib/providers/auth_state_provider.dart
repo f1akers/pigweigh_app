@@ -1,28 +1,28 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/utils/logger.dart';
-import '../services/api/api_client.dart';
-import '../services/storage/secure_storage_service.dart';
+import '../features/auth/data/repositories/auth_repository.dart';
 
 part 'auth_state_provider.g.dart';
 
 /// Authentication status enum.
 enum AuthStatus { initial, authenticated, unauthenticated }
 
-/// Immutable auth state.
+/// Immutable auth state with admin profile fields.
 class AuthState {
   const AuthState({
     this.status = AuthStatus.initial,
     this.userId,
-    this.email,
+    this.username,
+    this.name,
     this.isLoading = false,
     this.errorMessage,
   });
 
   final AuthStatus status;
   final String? userId;
-  final String? email;
+  final String? username;
+  final String? name;
   final bool isLoading;
   final String? errorMessage;
 
@@ -31,14 +31,16 @@ class AuthState {
   AuthState copyWith({
     AuthStatus? status,
     String? userId,
-    String? email,
+    String? username,
+    String? name,
     bool? isLoading,
     String? errorMessage,
   }) {
     return AuthState(
       status: status ?? this.status,
       userId: userId ?? this.userId,
-      email: email ?? this.email,
+      username: username ?? this.username,
+      name: name ?? this.name,
       isLoading: isLoading ?? this.isLoading,
       errorMessage: errorMessage,
     );
@@ -46,10 +48,15 @@ class AuthState {
 
   @override
   String toString() =>
-      'AuthState(status: $status, userId: $userId, isLoading: $isLoading)';
+      'AuthState(status: $status, userId: $userId, username: $username, isLoading: $isLoading)';
 }
 
-/// App-wide auth state notifier.
+/// App-wide auth state notifier backed by [AuthRepository].
+///
+/// On build, checks for an existing session:
+/// - If a token exists, verifies with the server (`GET /auth/me`).
+/// - Falls back to the Hive-cached admin profile when offline.
+/// - If no token exists, sets status to `unauthenticated`.
 ///
 /// ```dart
 /// final auth = ref.watch(authStateProvider);
@@ -57,65 +64,72 @@ class AuthState {
 /// ```
 @Riverpod(keepAlive: true)
 class AuthStateNotifier extends _$AuthStateNotifier {
-  late SecureStorageService _storage;
+  late AuthRepository _authRepo;
 
   @override
   AuthState build() {
-    _storage = ref.watch(secureStorageServiceProvider);
+    _authRepo = ref.watch(authRepositoryProvider);
     Future.microtask(() => _checkAuthStatus());
     return const AuthState(isLoading: true);
   }
 
+  /// Initial auth check on app start.
   Future<void> _checkAuthStatus() async {
     try {
-      final isAuth = await _storage.isAuthenticated();
+      final isAuth = await _authRepo.isAuthenticated();
 
-      if (isAuth) {
-        if (await _storage.isTokenExpired()) {
-          final apiClient = ref.read(apiClientProvider);
-          final refreshed = await apiClient.tryRefreshToken();
-          if (!refreshed) {
-            state = const AuthState(status: AuthStatus.unauthenticated);
-            return;
-          }
-        }
-
-        final userId = await _storage.getUserId();
-        final email = await _storage.getUserEmail();
-        state = AuthState(
-          status: AuthStatus.authenticated,
-          userId: userId,
-          email: email,
-        );
-      } else {
+      if (!isAuth) {
         state = const AuthState(status: AuthStatus.unauthenticated);
+        return;
       }
+
+      // Token exists — try to verify with server (falls back to cache).
+      final result = await _authRepo.verifySession();
+      result.when(
+        success: (admin) {
+          state = AuthState(
+            status: AuthStatus.authenticated,
+            userId: admin.id,
+            username: admin.username,
+            name: admin.name,
+          );
+          AppLogger.info('Session restored for ${admin.username}', tag: 'AUTH');
+        },
+        failure: (_) {
+          // No cached admin and server unreachable — force re-login.
+          state = const AuthState(status: AuthStatus.unauthenticated);
+        },
+      );
     } catch (e) {
       AppLogger.error('Auth check failed', tag: 'AUTH', error: e);
       state = const AuthState(status: AuthStatus.unauthenticated);
     }
   }
 
-  /// Called after a successful login.
-  Future<void> setAuthenticated({
-    required String accessToken,
-    required String refreshToken,
-    required String userId,
-    required String email,
-    DateTime? tokenExpiry,
+  /// Log in with username and password.
+  Future<void> login({
+    required String username,
+    required String password,
   }) async {
-    await _storage.saveTokens(
-      accessToken: accessToken,
-      refreshToken: refreshToken,
-      expiry: tokenExpiry,
-    );
-    await _storage.saveUserId(userId);
-    await _storage.saveUserEmail(email);
+    state = state.copyWith(isLoading: true, errorMessage: null);
 
-    state = AuthState(
-      status: AuthStatus.authenticated,
-      userId: userId,
-      email: email,
+    final result = await _authRepo.login(
+      username: username,
+      password: password,
+    );
+
+    result.when(
+      success: (admin) {
+        state = AuthState(
+          status: AuthStatus.authenticated,
+          userId: admin.id,
+          username: admin.username,
+          name: admin.name,
+        );
+      },
+      failure: (error) {
+        state = state.copyWith(isLoading: false, errorMessage: error.message);
+      },
     );
   }
 
@@ -123,15 +137,16 @@ class AuthStateNotifier extends _$AuthStateNotifier {
   Future<void> logout() async {
     state = state.copyWith(isLoading: true);
     try {
-      await _storage.clearTokens();
-      await _storage.delete(key: 'user_id');
-      await _storage.delete(key: 'user_email');
+      await _authRepo.logout();
       state = const AuthState(status: AuthStatus.unauthenticated);
     } catch (e) {
       state = state.copyWith(isLoading: false, errorMessage: e.toString());
     }
   }
 
+  /// Called by API interceptors when a 401 is received.
   void onAuthFailure() => logout();
+
+  /// Clear the current error message.
   void clearError() => state = state.copyWith(errorMessage: null);
 }

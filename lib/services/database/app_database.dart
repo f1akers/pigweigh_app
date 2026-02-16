@@ -27,22 +27,35 @@ class SrpRecords extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+/// Pending API operations queued while offline.
+class SyncQueue extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get endpoint => text()();
+  TextColumn get method => text()();
+  TextColumn get payload => text()();
+  DateTimeColumn get createdAt => dateTime()();
+  IntColumn get retryCount => integer().withDefault(const Constant(0))();
+  TextColumn get status => text().withDefault(const Constant('pending'))();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Database
 // ═══════════════════════════════════════════════════════════════════════════
 
-@DriftDatabase(tables: [SrpRecords])
+@DriftDatabase(tables: [SrpRecords, SyncQueue])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) => m.createAll(),
     onUpgrade: (m, from, to) async {
-      // Add future migration logic here
+      if (from < 2) {
+        await m.createTable(syncQueue);
+      }
     },
   );
 }
