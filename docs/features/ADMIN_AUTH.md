@@ -265,12 +265,12 @@ static const String login = '/login';
 
 **Data Layer:**
 
-- [ ] AdminModel (freezed)
-- [ ] LoginResponseModel (freezed)
-- [ ] AuthRepository (login, verify, cache, logout)
-- [ ] Update AuthStateNotifier
-- [ ] Hive admin cache integration
-- [ ] Router guard updates
+- [x] AdminModel (freezed)
+- [x] LoginResponseModel (freezed)
+- [x] AuthRepository (login, verify, cache, logout)
+- [x] Update AuthStateNotifier
+- [x] Hive admin cache integration
+- [x] Router guard updates
 
 **Presentation Layer:**
 

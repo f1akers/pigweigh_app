@@ -215,11 +215,11 @@ App detects connectivity restored
 
 ## 9. Status
 
-- [ ] Connectivity provider
-- [ ] SyncQueue Drift table + migration
-- [ ] SyncQueueService
-- [ ] SyncCoordinator provider
-- [ ] Hive last-sync tracking
+- [x] Connectivity provider
+- [x] SyncQueue Drift table + migration
+- [x] SyncQueueService
+- [x] SyncCoordinator provider
+- [x] Hive last-sync tracking
 - [ ] Integration with SRP repository
 - [ ] Integration with admin SRP creation
 - [ ] Reconnect pull logic

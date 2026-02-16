@@ -236,11 +236,11 @@ static const String priceHistory = '/price-history';
 
 **Data Layer:**
 
-- [ ] SrpRealtimeListener provider
-- [ ] SrpNotification provider
-- [ ] PriceHistory provider (paginated)
-- [ ] Socket.IO reconnection strategy
-- [ ] Cache-first read logic
+- [x] SrpRealtimeListener provider
+- [x] SrpNotification provider
+- [x] PriceHistory provider (paginated)
+- [x] Socket.IO reconnection strategy
+- [x] Cache-first read logic
 
 **Presentation Layer:**
 

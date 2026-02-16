@@ -67,13 +67,13 @@
 
 ### Features
 
-| #   | Feature                      | Description                                                                   | Status        | Documentation                                                          |
-| --- | ---------------------------- | ----------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------- |
-| 0   | Offline Sync & Connectivity  | Connectivity monitoring, Drift cache, sync queue for offline admin operations | 📝 Documented | [features/OFFLINE_SYNC.md](features/OFFLINE_SYNC.md)                   |
-| 1   | Admin Authentication         | Admin login, JWT storage, Hive session cache, offline session persistence     | 📝 Documented | [features/ADMIN_AUTH.md](features/ADMIN_AUTH.md)                       |
-| 2   | SRP Management (Admin)       | Encode new SRP records, admin list view, offline queue                        | 📝 Documented | [features/SRP_MANAGEMENT.md](features/SRP_MANAGEMENT.md)               |
-| 3   | Price History (User)         | Public SRP history list, Socket.IO real-time toast notifications              | 📝 Documented | [features/PRICE_HISTORY.md](features/PRICE_HISTORY.md)                 |
-| 4   | Pig Weight Estimation (User) | Camera capture (top + side view), TFLite inference, price estimation          | 📝 Documented | [features/PIG_WEIGHT_ESTIMATION.md](features/PIG_WEIGHT_ESTIMATION.md) |
+| #   | Feature                      | Description                                                                   | Status             | Documentation                                                          |
+| --- | ---------------------------- | ----------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------- |
+| 0   | Offline Sync & Connectivity  | Connectivity monitoring, Drift cache, sync queue for offline admin operations | ⚙️ Data Layer Done | [features/OFFLINE_SYNC.md](features/OFFLINE_SYNC.md)                   |
+| 1   | Admin Authentication         | Admin login, JWT storage, Hive session cache, offline session persistence     | ⚙️ Data Layer Done | [features/ADMIN_AUTH.md](features/ADMIN_AUTH.md)                       |
+| 2   | SRP Management (Admin)       | Encode new SRP records, admin list view, offline queue                        | ⚙️ Data Layer Done | [features/SRP_MANAGEMENT.md](features/SRP_MANAGEMENT.md)               |
+| 3   | Price History (User)         | Public SRP history list, Socket.IO real-time toast notifications              | ⚙️ Data Layer Done | [features/PRICE_HISTORY.md](features/PRICE_HISTORY.md)                 |
+| 4   | Pig Weight Estimation (User) | Camera capture (top + side view), TFLite inference, price estimation          | 📝 Documented      | [features/PIG_WEIGHT_ESTIMATION.md](features/PIG_WEIGHT_ESTIMATION.md) |
 
 > **Implementation order**: Follow the `#` column top-to-bottom. Each feature builds on its dependencies.
 >

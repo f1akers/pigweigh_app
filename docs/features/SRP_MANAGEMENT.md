@@ -429,13 +429,13 @@ static const String adminSrpEncode = '/admin/srp/encode';
 
 **Data Layer:**
 
-- [ ] SrpRecordModel (freezed)
-- [ ] SrpCreatedByModel (freezed)
-- [ ] SrpListResponseModel + PaginationModel (freezed)
-- [ ] CreateSrpRequest (freezed)
-- [ ] SrpRepository (server + cache + offline queue)
-- [ ] SRP Riverpod providers
-- [ ] Drift ↔ Model mapping utilities
+- [x] SrpRecordModel (freezed)
+- [x] SrpCreatedByModel (freezed)
+- [x] SrpListResponseModel + PaginationModel (freezed)
+- [x] CreateSrpRequest (freezed)
+- [x] SrpRepository (server + cache + offline queue)
+- [x] SRP Riverpod providers
+- [x] Drift ↔ Model mapping utilities
 
 **Presentation Layer:**
 
