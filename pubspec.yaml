@@ -78,5 +78,7 @@ flutter:
 
   assets:
     - assets/models/
+    - assets/models/pig_weight_estimation.tflite
+    - assets/labels/pig_weight_labels.txt
     - assets/images/
     - .env
