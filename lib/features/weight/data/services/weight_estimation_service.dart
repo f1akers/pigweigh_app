@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image/image.dart' as img;
@@ -19,10 +20,6 @@ part 'weight_estimation_service.g.dart';
 /// 2. Call [estimateFromImage] for each captured photo (top or side view).
 /// 3. Call [calculateBestEstimate] after both views are processed.
 ///
-/// **Ambiguity detection:**
-/// If two or more classes have confidence within [ambiguityThreshold] of the
-/// top prediction, the result is flagged as ambiguous and the user should
-/// retake that view.
 class WeightEstimationService {
   WeightEstimationService({required TfliteService tfliteService})
     : _tfliteService = tfliteService;
@@ -45,10 +42,6 @@ class WeightEstimationService {
 
   /// Number of output classes.
   int _numClasses = 0;
-
-  /// If the gap between the top prediction and the runner-up is less than
-  /// this threshold, the prediction is considered ambiguous.
-  static const double ambiguityThreshold = 0.10;
 
   /// How many top predictions to retain in the result.
   static const int topN = 5;
@@ -182,28 +175,39 @@ class WeightEstimationService {
     // 3. Run inference.
     _tfliteService.runInference(input, output);
 
-    // 4. Parse output probabilities.
-    final probabilities = (output[0] as List<dynamic>).cast<double>();
+    // 4. Apply softmax to convert raw logits → probabilities.
+    //    The model outputs raw logits (NormalizedMobileNetV2 has no final
+    //    softmax layer), so we must convert them here before computing
+    //    confidence scores. Without this, "confidence" values would be
+    //    arbitrary real numbers rather than the [0, 1] range expected.
+    final logits = (output[0] as List<dynamic>).cast<double>();
+    final probabilities = _softmax(logits);
 
     // 5. Build sorted predictions.
     final predictions = _buildPredictions(probabilities);
-
-    // 6. Check ambiguity.
-    final isAmbiguous = _checkAmbiguity(predictions);
 
     final topPrediction = predictions.first;
 
     AppLogger.info(
       '$viewType view → ${topPrediction.label} '
-      '(${(topPrediction.confidence * 100).toStringAsFixed(1)}%) '
-      '${isAmbiguous ? "[AMBIGUOUS]" : ""}',
+      '(${(topPrediction.confidence * 100).toStringAsFixed(1)}%)',
       tag: 'WEIGHT',
     );
+
+    // 🐛 DEBUG — dump top-5 predictions so we can verify model output
+    final top5 = predictions.take(topN).toList();
+    for (var i = 0; i < top5.length; i++) {
+      final p = top5[i];
+      AppLogger.debug(
+        '  #${i + 1}  ${p.label.padRight(6)}  ${(p.confidence * 100).toStringAsFixed(2)}%',
+        tag: 'WEIGHT_DEBUG',
+      );
+    }
 
     return ViewEstimationResult(
       weightKg: topPrediction.weightKg,
       confidence: topPrediction.confidence,
-      isAmbiguous: isAmbiguous,
+      isAmbiguous: false,
       imagePath: imagePath,
       viewType: viewType,
       allPredictions: predictions.take(topN).toList(),
@@ -290,6 +294,21 @@ class WeightEstimationService {
   // Prediction Parsing
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /// Convert raw logits to a probability distribution via softmax.
+  ///
+  /// Uses the numerically stable max-subtraction form:
+  ///   softmax(x_i) = exp(x_i − max) / Σ exp(x_j − max)
+  ///
+  /// The model (NormalizedMobileNetV2) has no final activation layer and
+  /// outputs raw logits, so this must be applied before reading confidence.
+  List<double> _softmax(List<double> logits) {
+    if (logits.isEmpty) return [];
+    final maxLogit = logits.reduce(math.max);
+    final exps = logits.map((v) => math.exp(v - maxLogit)).toList();
+    final sumExp = exps.reduce((a, b) => a + b);
+    return exps.map((v) => v / sumExp).toList();
+  }
+
   /// Build a sorted list of [PredictionClass] from raw output probabilities.
   List<PredictionClass> _buildPredictions(List<double> probabilities) {
     final predictions = <PredictionClass>[];
@@ -307,19 +326,6 @@ class WeightEstimationService {
     // Sort descending by confidence.
     predictions.sort((a, b) => b.confidence.compareTo(a.confidence));
     return predictions;
-  }
-
-  /// Check if the prediction is ambiguous — two or more top classes
-  /// have confidence within [ambiguityThreshold] of each other.
-  bool _checkAmbiguity(List<PredictionClass> sortedPredictions) {
-    if (sortedPredictions.length < 2) return false;
-
-    final top = sortedPredictions[0].confidence;
-    final runnerUp = sortedPredictions[1].confidence;
-
-    // If the difference between #1 and #2 is less than the threshold,
-    // the model is uncertain → ambiguous.
-    return (top - runnerUp) < ambiguityThreshold;
   }
 }
 

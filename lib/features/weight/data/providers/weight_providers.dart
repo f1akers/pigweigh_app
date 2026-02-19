@@ -49,20 +49,9 @@ class WeightFormState {
   /// Whether the side view has been captured and processed.
   bool get hasSideView => sideViewResult != null;
 
-  /// Whether the top view needs to be retaken (ambiguous result).
-  bool get topViewNeedsRetry => topViewResult?.isAmbiguous ?? false;
-
-  /// Whether the side view needs to be retaken (ambiguous result).
-  bool get sideViewNeedsRetry => sideViewResult?.isAmbiguous ?? false;
-
   /// Whether the "Calculate" button should be enabled:
-  /// both views captured, neither is ambiguous, and not currently processing.
-  bool get canCalculate =>
-      hasTopView &&
-      hasSideView &&
-      !topViewNeedsRetry &&
-      !sideViewNeedsRetry &&
-      !isProcessing;
+  /// both views captured and not currently processing.
+  bool get canCalculate => hasTopView && hasSideView && !isProcessing;
 
   WeightFormState copyWith({
     ViewEstimationResult? topViewResult,
@@ -133,11 +122,6 @@ class WeightForm extends _$WeightForm {
   /// Process a captured top-view image through the TFLite model.
   ///
   /// [imagePath] — absolute path to the image file from camera/gallery.
-  ///
-  /// **Frontend notes:**
-  /// - Call this after the user captures or selects a top-view photo.
-  /// - The result will be available in `state.topViewResult`.
-  /// - If `state.topViewResult.isAmbiguous`, prompt user to retake.
   Future<void> processTopView(String imagePath) async {
     state = state.copyWith(isProcessing: true, clearError: true);
 
@@ -148,13 +132,6 @@ class WeightForm extends _$WeightForm {
         viewType: 'top',
       );
       state = state.copyWith(topViewResult: result, isProcessing: false);
-
-      if (result.isAmbiguous) {
-        AppLogger.warn(
-          'Top view is ambiguous — two or more classes detected',
-          tag: 'WEIGHT',
-        );
-      }
     } catch (e) {
       AppLogger.error('Top view inference failed', tag: 'WEIGHT', error: e);
       state = state.copyWith(
@@ -167,11 +144,6 @@ class WeightForm extends _$WeightForm {
   /// Process a captured side-view image through the TFLite model.
   ///
   /// [imagePath] — absolute path to the image file from camera/gallery.
-  ///
-  /// **Frontend notes:**
-  /// - Call this after the user captures or selects a side-view photo.
-  /// - The result will be available in `state.sideViewResult`.
-  /// - If `state.sideViewResult.isAmbiguous`, prompt user to retake.
   Future<void> processSideView(String imagePath) async {
     state = state.copyWith(isProcessing: true, clearError: true);
 
@@ -182,13 +154,6 @@ class WeightForm extends _$WeightForm {
         viewType: 'side',
       );
       state = state.copyWith(sideViewResult: result, isProcessing: false);
-
-      if (result.isAmbiguous) {
-        AppLogger.warn(
-          'Side view is ambiguous — two or more classes detected',
-          tag: 'WEIGHT',
-        );
-      }
     } catch (e) {
       AppLogger.error('Side view inference failed', tag: 'WEIGHT', error: e);
       state = state.copyWith(

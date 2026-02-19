@@ -4,6 +4,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../features/auth/presentation/screens/home_screen.dart';
 import '../features/auth/presentation/screens/login_screen.dart';
+import '../features/srp/presentation/screens/price_history_screen.dart';
 import '../features/srp/presentation/screens/srp_management_screen.dart';
 import '../features/weight/presentation/screens/weight_estimation_screen.dart';
 import 'auth_state_provider.dart';
@@ -73,7 +74,7 @@ GoRouter router(Ref ref) {
       ),
       GoRoute(
         path: AppRoutes.priceHistory,
-        builder: (_, __) => const _PlaceholderScreen(title: 'Price History'),
+        builder: (_, __) => const PriceHistoryScreen(),
       ),
       GoRoute(
         path: AppRoutes.adminSrp,

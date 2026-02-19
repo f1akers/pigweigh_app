@@ -7,10 +7,6 @@ import '../../../../core/utils/logger.dart';
 import '../../data/models/weight_estimation_model.dart';
 import '../../data/providers/weight_providers.dart';
 
-/// Confidence threshold below which we treat the result as
-/// "no pig detected" and prompt the user to retake.
-const double _noPigConfidenceThreshold = 0.15;
-
 /// Tab 1 — Capture top-view and side-view photos, run TFLite inference,
 /// and trigger the final weight + price calculation.
 ///
@@ -244,10 +240,6 @@ class _CapturePanel extends StatelessWidget {
 
   _ViewStatus get _status {
     if (result == null) return _ViewStatus.empty;
-    if (result!.confidence < _noPigConfidenceThreshold) {
-      return _ViewStatus.noPig;
-    }
-    if (result!.isAmbiguous) return _ViewStatus.ambiguous;
     return _ViewStatus.ok;
   }
 
@@ -255,8 +247,7 @@ class _CapturePanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final status = _status;
     final bool isDone = status == _ViewStatus.ok;
-    final bool needsRetake =
-        status == _ViewStatus.noPig || status == _ViewStatus.ambiguous;
+    const bool needsRetake = false;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -346,56 +337,6 @@ class _CapturePanel extends StatelessWidget {
             ),
           ),
         ),
-
-        // ── Warning / retake message ────────────────────────────────────────
-        if (needsRetake)
-          Padding(
-            padding: const EdgeInsets.only(top: 8, left: 4, right: 4),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.warning_amber_rounded,
-                  color: Colors.orange.shade700,
-                  size: 16,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    status == _ViewStatus.noPig
-                        ? 'No pig detected — please retake this view.'
-                        : 'Unclear result — please retake this view.',
-                    style: TextStyle(
-                      color: Colors.orange.shade800,
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                GestureDetector(
-                  onTap: isProcessing ? null : onTap,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.shade50,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.orange.shade700),
-                    ),
-                    child: Text(
-                      'Retake',
-                      style: TextStyle(
-                        color: Colors.orange.shade800,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
       ],
     );
   }
@@ -403,7 +344,7 @@ class _CapturePanel extends StatelessWidget {
 
 // ── Status icon ───────────────────────────────────────────────────────────────
 
-enum _ViewStatus { empty, ok, noPig, ambiguous }
+enum _ViewStatus { empty, ok }
 
 class _StatusIcon extends StatelessWidget {
   const _StatusIcon({required this.status});
@@ -415,13 +356,6 @@ class _StatusIcon extends StatelessWidget {
     switch (status) {
       case _ViewStatus.ok:
         return Icon(Icons.check_circle, color: Colors.green.shade600, size: 28);
-      case _ViewStatus.noPig:
-      case _ViewStatus.ambiguous:
-        return Icon(
-          Icons.warning_rounded,
-          color: Colors.orange.shade700,
-          size: 28,
-        );
       case _ViewStatus.empty:
         return Icon(
           Icons.circle_outlined,

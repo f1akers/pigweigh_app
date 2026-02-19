@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../../../core/providers/connectivity_provider.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../providers/router_provider.dart';
 import '../../data/providers/weight_providers.dart';
@@ -23,6 +24,7 @@ class TotalPriceTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final resultState = ref.watch(weightResultProvider);
+    final isOnline = ref.watch(connectivityProvider);
 
     // If the user somehow lands here without a result, show a placeholder.
     if (!resultState.hasResult) {
@@ -140,13 +142,17 @@ class TotalPriceTab extends ConsumerWidget {
                     child: Column(
                       children: [
                         Icon(
-                          Icons.wifi_off_rounded,
+                          isOnline
+                              ? Icons.price_change_outlined
+                              : Icons.wifi_off_rounded,
                           color: Colors.grey.shade500,
                           size: 32,
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'Connect to the internet to load current market prices.',
+                          isOnline
+                              ? 'No active market price is currently available.'
+                              : 'Connect to the internet to load current market prices.',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.grey.shade600,
