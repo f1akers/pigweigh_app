@@ -1,4 +1,4 @@
-package com.example.pigweigh_app
+package com.ajaparicio.pigweigh
 
 import io.flutter.embedding.android.FlutterActivity
 
