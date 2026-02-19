@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../features/auth/presentation/screens/home_screen.dart';
 import '../features/auth/presentation/screens/login_screen.dart';
 import '../features/srp/presentation/screens/srp_management_screen.dart';
+import '../features/weight/presentation/screens/weight_estimation_screen.dart';
 import 'auth_state_provider.dart';
 
 part 'router_provider.g.dart';
@@ -68,8 +69,7 @@ GoRouter router(Ref ref) {
       ),
       GoRoute(
         path: AppRoutes.weightEstimation,
-        builder: (_, __) =>
-            const _PlaceholderScreen(title: 'Pig Weight Estimation'),
+        builder: (_, __) => const WeightEstimationScreen(),
       ),
       GoRoute(
         path: AppRoutes.priceHistory,
