@@ -4,6 +4,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../features/auth/presentation/screens/home_screen.dart';
 import '../features/auth/presentation/screens/login_screen.dart';
+import '../features/srp/presentation/screens/srp_management_screen.dart';
 import 'auth_state_provider.dart';
 
 part 'router_provider.g.dart';
@@ -76,11 +77,11 @@ GoRouter router(Ref ref) {
       ),
       GoRoute(
         path: AppRoutes.adminSrp,
-        builder: (_, __) => const _PlaceholderScreen(title: 'SRP Management'),
+        builder: (_, __) => const SrpManagementScreen(),
       ),
       GoRoute(
         path: AppRoutes.adminSrpEncode,
-        builder: (_, __) => const _PlaceholderScreen(title: 'Encode SRP'),
+        builder: (_, __) => const SrpManagementScreen(),
       ),
     ],
 

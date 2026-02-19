@@ -93,9 +93,7 @@ class HomeScreen extends StatelessWidget {
                               backgroundColor: AppTheme.primaryRed,
                               foregroundColor: Colors.white,
                               elevation: 3,
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 18,
-                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 18),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(14),
                               ),
@@ -123,9 +121,7 @@ class HomeScreen extends StatelessWidget {
                               backgroundColor: AppTheme.primaryRed,
                               foregroundColor: Colors.white,
                               elevation: 3,
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 18,
-                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 18),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(14),
                               ),
