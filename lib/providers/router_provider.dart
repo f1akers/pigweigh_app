@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../features/auth/presentation/screens/home_screen.dart';
+import '../features/auth/presentation/screens/login_screen.dart';
 import 'auth_state_provider.dart';
 
 part 'router_provider.g.dart';
@@ -16,6 +18,7 @@ class AppRoutes {
 
   // ── Public routes (no auth required) ──────────────────────────────────────
   static const String priceHistory = '/price-history';
+  static const String weightEstimation = '/weight';
 
   // ── Admin routes (auth required) ──────────────────────────────────────────
   static const String adminSrp = '/admin/srp';
@@ -56,17 +59,16 @@ GoRouter router(Ref ref) {
     },
 
     routes: [
-      GoRoute(
-        path: AppRoutes.splash,
-        builder: (_, __) => const _PlaceholderScreen(title: 'Loading…'),
-      ),
-      GoRoute(
-        path: AppRoutes.login,
-        builder: (_, __) => const _PlaceholderScreen(title: 'Login'),
-      ),
+      GoRoute(path: AppRoutes.splash, builder: (_, __) => const HomeScreen()),
+      GoRoute(path: AppRoutes.login, builder: (_, __) => const LoginScreen()),
       GoRoute(
         path: AppRoutes.home,
         builder: (_, __) => const _PlaceholderScreen(title: 'Home'),
+      ),
+      GoRoute(
+        path: AppRoutes.weightEstimation,
+        builder: (_, __) =>
+            const _PlaceholderScreen(title: 'Pig Weight Estimation'),
       ),
       GoRoute(
         path: AppRoutes.priceHistory,
