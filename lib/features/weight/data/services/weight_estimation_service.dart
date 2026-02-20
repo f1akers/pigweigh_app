@@ -111,6 +111,7 @@ class WeightEstimationService {
       final inputTensor = interpreter.getInputTensor(0);
       final inputShape = inputTensor.shape; // e.g., [1, 224, 224, 3]
       final inputType = inputTensor.type;
+      final inputParams = inputTensor.params; // quantization scale + zeroPoint
 
       if (inputShape.length == 4) {
         _inputHeight = inputShape[1];
@@ -121,16 +122,37 @@ class WeightEstimationService {
 
       final outputTensor = interpreter.getOutputTensor(0);
       final outputShape = outputTensor.shape; // e.g., [1, 95]
+      final outputParams = outputTensor.params;
       if (outputShape.length >= 2) {
         _numClasses = outputShape[1];
       }
 
       interpreter.close();
 
+      // ── CRITICAL DIAGNOSTIC ──────────────────────────────────────────────
+      // inputType tells us what the model's input tensor actually expects.
+      //   float32  → model may have internal preprocessing (Rescaling layer)
+      //              OR expects a specific normalized float range.
+      //   uint8    → quantized model; feed Uint8List [0, 255].
+      //   int8     → quantized model; feed Int8List (centered at zeroPoint).
+      //
+      // inputParams.scale / zeroPoint (only meaningful for quantized tensors):
+      //   If scale ≈ 0.00392 (≈1/255) and zp = 0 → uint8 model, input [0,255].
+      //   If scale ≈ 0.00784 (≈2/255) and zp = -128 → int8, input [-128,127].
+      //   If scale = 0 and zp = 0 → float32 with no quantization params.
+      //
+      // Run debug_model.py on the PC to test all normalizations definitively.
       AppLogger.debug(
-        'Model shape — input: $inputShape ($inputType), '
-        'output: $outputShape ($_numClasses classes)',
-        tag: 'WEIGHT',
+        '═══ MODEL TENSOR METADATA ═══\n'
+        '  input  : shape=$inputShape  type=$inputType  '
+        'isFloat32=$_isFloat32Input\n'
+        '  input  : quantScale=${inputParams.scale}  '
+        'quantZeroPoint=${inputParams.zeroPoint}\n'
+        '  output : shape=$outputShape  classes=$_numClasses\n'
+        '  output : quantScale=${outputParams.scale}  '
+        'quantZeroPoint=${outputParams.zeroPoint}\n'
+        '═══════════════════════════════',
+        tag: 'WEIGHT_DEBUG',
       );
     } catch (e) {
       AppLogger.warn(
@@ -175,13 +197,33 @@ class WeightEstimationService {
     // 3. Run inference.
     _tfliteService.runInference(input, output);
 
-    // 4. Apply softmax to convert raw logits → probabilities.
-    //    The model outputs raw logits (NormalizedMobileNetV2 has no final
-    //    softmax layer), so we must convert them here before computing
-    //    confidence scores. Without this, "confidence" values would be
-    //    arbitrary real numbers rather than the [0, 1] range expected.
-    final logits = (output[0] as List<dynamic>).cast<double>();
-    final probabilities = _softmax(logits);
+    // 4. Read probabilities directly from the output tensor.
+    //
+    //    The YOLO classification model has:
+    //      • ÷255 normalization baked in as preprocessing
+    //        → Flutter passes raw float32 [0, 255]; model normalises internally.
+    //      • Softmax baked in as the final layer
+    //        → output is already a valid probability distribution (sum ≈ 1.0).
+    //    No manual normalization or softmax is ever needed here.
+    final rawOutput = (output[0] as List<dynamic>).cast<double>();
+
+    // Diagnostic — confirms the model outputs probabilities (sum ≈ 1.0).
+    // After a successful retrain you should see sum ≈ 1.0 and a clear winner.
+    final rawMax = rawOutput.reduce(math.max);
+    final rawSum = rawOutput.reduce((a, b) => a + b);
+    AppLogger.debug(
+      'Raw model output — max: ${rawMax.toStringAsFixed(4)}, '
+      'sum: ${rawSum.toStringAsFixed(4)} '
+      '(${(rawSum - 1.0).abs() < 0.05 ? "✓ probabilities" : "⚠ unexpected — check model"})',
+      tag: 'WEIGHT_DEBUG',
+    );
+
+    // The model outputs probabilities directly. If sum is unexpectedly far
+    // from 1.0, apply softmax as a fallback (e.g., old model loaded by mistake).
+    final bool alreadyProbabilities = (rawSum - 1.0).abs() < 0.05;
+    final probabilities = alreadyProbabilities
+        ? rawOutput
+        : _softmax(rawOutput);
 
     // 5. Build sorted predictions.
     final predictions = _buildPredictions(probabilities);
@@ -246,8 +288,19 @@ class WeightEstimationService {
   // Image Preprocessing
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Load an image from disk, resize to model dimensions, normalise,
-  /// and return the input tensor.
+  /// Load an image from disk, resize to model dimensions, and
+  /// return the input tensor as raw float32 [0–255].
+  ///
+  /// ## Why no external normalization?
+  /// The YOLO classification TFLite export bakes ÷255 normalization
+  /// INSIDE the TFLite graph as a preprocessing step. Applying
+  /// normalization externally would double-normalize: every pixel
+  /// collapses to near-zero, making the model produce near-uniform
+  /// probabilities (~1% confidence on every class).
+  ///
+  /// Correct pipeline:
+  ///   Raw JPEG → decode → EXIF-orient → resize → float32 [0–255] → model
+  ///   (model internally: x/255 → YOLO classification layers → softmax)
   Future<List<List<List<List<double>>>>> _preprocessImage(
     String imagePath,
   ) async {
@@ -261,6 +314,12 @@ class WeightEstimationService {
     // Handle EXIF orientation.
     image = img.bakeOrientation(image);
 
+    AppLogger.debug(
+      'Image decoded — ${image.width}x${image.height} '
+      'format: ${image.format} numChannels: ${image.numChannels}',
+      tag: 'WEIGHT_DEBUG',
+    );
+
     // Resize to model input dimensions.
     image = img.copyResize(
       image,
@@ -269,22 +328,65 @@ class WeightEstimationService {
       interpolation: img.Interpolation.linear,
     );
 
-    // Build the 4D input tensor [1, height, width, channels].
+    // ── Pixel-level sanity check (top-left 3×3 sample) ──────────────────────
+    // Shows the raw channel values coming out of the image package.
+    // Expected for a typical camera photo: values in [0–255].
+    // If you see values in [0.0–1.0] the image package is using float32
+    // format and you must multiply by 255 before building the tensor.
+    final samplePixel = image.getPixel(0, 0);
+    AppLogger.debug(
+      'Sample pixel [0,0] → r:${samplePixel.r.toStringAsFixed(1)} '
+      'g:${samplePixel.g.toStringAsFixed(1)} '
+      'b:${samplePixel.b.toStringAsFixed(1)} '
+      '(maxChannelValue: ${image.maxChannelValue})',
+      tag: 'WEIGHT_DEBUG',
+    );
+
+    // Build the 4D input tensor [1, H, W, 3] as raw float32 [0–255].
+    //
+    // DO NOT normalize here. The YOLO model's baked-in preprocessing handles
+    // ÷255 internally. Passing pre-normalized values means the model
+    // applies the normalization a second time, collapsing all activations.
     final input = List.generate(
       1,
       (_) => List.generate(
         _inputHeight,
         (y) => List.generate(_inputWidth, (x) {
           final pixel = image!.getPixel(x, y);
-
-          if (_isFloat32Input) {
-            // Normalize to 0.0 – 1.0
-            return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
-          } else {
-            return [pixel.r.toDouble(), pixel.g.toDouble(), pixel.b.toDouble()];
-          }
+          // pixel.r/g/b are raw channel values [0–maxChannelValue].
+          // For uint8 JPEG this is [0–255]; for float32 images it may be
+          // [0.0–1.0] — the pixel sanity-check log above will reveal which.
+          return [pixel.r.toDouble(), pixel.g.toDouble(), pixel.b.toDouble()];
         }),
       ),
+    );
+
+    // ── Input-tensor statistics ──────────────────────────────────────────────
+    // After the fix, expect: min ≈ 0, max ≈ 255, mean ≈ 100–180.
+    // If you still see min/max in [0.0–1.0], the image is float32 format
+    // → multiply pixel values by 255 inside the loop above.
+    double tensorMin = double.infinity;
+    double tensorMax = double.negativeInfinity;
+    double tensorSum = 0;
+    int tensorCount = 0;
+    for (final batch in input) {
+      for (final row in batch) {
+        for (final col in row) {
+          for (final v in col) {
+            if (v < tensorMin) tensorMin = v;
+            if (v > tensorMax) tensorMax = v;
+            tensorSum += v;
+            tensorCount++;
+          }
+        }
+      }
+    }
+    AppLogger.debug(
+      'Input tensor stats — '
+      'min: ${tensorMin.toStringAsFixed(1)}, '
+      'max: ${tensorMax.toStringAsFixed(1)}, '
+      'mean: ${(tensorSum / tensorCount).toStringAsFixed(1)}',
+      tag: 'WEIGHT_DEBUG',
     );
 
     return input;
@@ -299,8 +401,9 @@ class WeightEstimationService {
   /// Uses the numerically stable max-subtraction form:
   ///   softmax(x_i) = exp(x_i − max) / Σ exp(x_j − max)
   ///
-  /// The model (NormalizedMobileNetV2) has no final activation layer and
-  /// outputs raw logits, so this must be applied before reading confidence.
+  /// The YOLO model has softmax baked in, so this is only used as a
+  /// safety-net fallback if the output unexpectedly doesn't sum to ≈ 1.0
+  /// (e.g., a mismatched model was loaded by mistake).
   List<double> _softmax(List<double> logits) {
     if (logits.isEmpty) return [];
     final maxLogit = logits.reduce(math.max);
