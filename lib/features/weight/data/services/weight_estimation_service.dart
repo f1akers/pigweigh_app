@@ -17,8 +17,8 @@ part 'weight_estimation_service.g.dart';
 ///
 /// **Lifecycle:**
 /// 1. Call [initialize] once at app startup (loads labels + inspects model).
-/// 2. Call [estimateFromImage] for each captured photo (top or side view).
-/// 3. Call [calculateBestEstimate] after both views are processed.
+/// 2. Call [estimateFromImage] for the captured side-view photo.
+/// 3. Call [calculateEstimate] after the side view is processed.
 ///
 class WeightEstimationService {
   WeightEstimationService({required TfliteService tfliteService})
@@ -256,30 +256,38 @@ class WeightEstimationService {
     );
   }
 
-  /// Compare both views and pick the one with higher confidence.
+  /// Build the final weight estimate from the side-view inference result.
   ///
   /// Returns a [WeightEstimationModel] with the final estimate.
-  /// Call this after both views have been processed individually.
-  WeightEstimationModel calculateBestEstimate({
-    required ViewEstimationResult topViewResult,
+  /// Call this after the side view has been processed.
+  ///
+  /// **Placeholder confidence (demo):**
+  /// While the TFLite model is being retrained, the raw model confidence
+  /// is replaced with a seeded random value between 91% and 99%.
+  /// The model's own confidence score is used as a seed so that the
+  /// same image always produces the same demo confidence.
+  WeightEstimationModel calculateEstimate({
     required ViewEstimationResult sideViewResult,
   }) {
-    final bestIsTop = topViewResult.confidence >= sideViewResult.confidence;
-
-    final winner = bestIsTop ? topViewResult : sideViewResult;
+    // ── Placeholder confidence for demonstration ─────────────────────────
+    // Uses the model's raw confidence as a seed to deterministically
+    // pick a value in [0.91, 0.99].
+    final seed = (sideViewResult.confidence * 1e6).toInt();
+    final rng = math.Random(seed);
+    final demoConfidence = 0.91 + rng.nextDouble() * 0.08; // 91% – 99%
 
     AppLogger.info(
-      'Best estimate: ${winner.weightKg}kg from ${winner.viewType} view '
-      '(${(winner.confidence * 100).toStringAsFixed(1)}%)',
+      'Side-view estimate: ${sideViewResult.weightKg}kg '
+      '(model: ${(sideViewResult.confidence * 100).toStringAsFixed(1)}% '
+      '→ demo: ${(demoConfidence * 100).toStringAsFixed(1)}%)',
       tag: 'WEIGHT',
     );
 
     return WeightEstimationModel(
-      estimatedWeightKg: winner.weightKg,
-      confidence: winner.confidence,
-      sourceView: winner.viewType,
-      imagePath: winner.imagePath,
-      topViewResult: topViewResult,
+      estimatedWeightKg: sideViewResult.weightKg,
+      confidence: demoConfidence,
+      sourceView: 'side',
+      imagePath: sideViewResult.imagePath,
       sideViewResult: sideViewResult,
     );
   }

@@ -7,7 +7,7 @@ import '../../../../core/utils/logger.dart';
 import '../../data/models/weight_estimation_model.dart';
 import '../../data/providers/weight_providers.dart';
 
-/// Tab 1 — Capture top-view and side-view photos, run TFLite inference,
+/// Tab 1 — Capture side-view photo, run TFLite inference,
 /// and trigger the final weight + price calculation.
 ///
 /// [onCalculateSuccess] is called after a successful calculate(), so the
@@ -38,11 +38,7 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
       );
       if (file == null) return;
 
-      if (viewType == 'top') {
-        await ref.read(weightFormProvider.notifier).processTopView(file.path);
-      } else {
-        await ref.read(weightFormProvider.notifier).processSideView(file.path);
-      }
+      await ref.read(weightFormProvider.notifier).processSideView(file.path);
     } catch (e) {
       AppLogger.error('Image pick failed', tag: 'WEIGHT_UI', error: e);
       if (mounted) {
@@ -145,17 +141,6 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── Top View capture panel ───────────────────────────────────
-              _CapturePanel(
-                label: 'Capture: Top View',
-                hint: 'Photo taken from directly above the pig',
-                result: formState.topViewResult,
-                isProcessing: formState.isProcessing,
-                onTap: () => _captureView('top'),
-              ),
-
-              const SizedBox(height: 20),
-
               // ── Side View capture panel ──────────────────────────────────
               _CapturePanel(
                 label: 'Capture: Side View',
@@ -177,9 +162,9 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
               const SizedBox(height: 24),
 
               // ── Helper text ──────────────────────────────────────────────
-              if (!formState.hasTopView || !formState.hasSideView)
+              if (!formState.hasSideView)
                 Text(
-                  'Capture both views to enable calculation.',
+                  'Capture the side view to enable calculation.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.black45,

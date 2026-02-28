@@ -16,23 +16,19 @@ part 'weight_providers.g.dart';
 ///
 /// **Frontend expectations:**
 /// - Watch this provider for the current form state.
-/// - Show `topViewResult` / `sideViewResult` as preview cards when available.
-/// - If a result has `isAmbiguous == true`, show a warning badge on that
+/// - Show `sideViewResult` as a preview card when available.
+/// - If the result has `isAmbiguous == true`, show a warning badge on the
 ///   card and disable the "Calculate" button.
-/// - The "Calculate" button is enabled only when both views have non-null,
-///   non-ambiguous results.
+/// - The "Calculate" button is enabled only when the side view has a non-null,
+///   non-ambiguous result.
 /// - On error, display [errorMessage] as a snackbar/toast.
 /// - [isProcessing] — show a loading overlay during inference.
 class WeightFormState {
   const WeightFormState({
-    this.topViewResult,
     this.sideViewResult,
     this.isProcessing = false,
     this.errorMessage,
   });
-
-  /// Result of the top-view inference (null if not yet captured).
-  final ViewEstimationResult? topViewResult;
 
   /// Result of the side-view inference (null if not yet captured).
   final ViewEstimationResult? sideViewResult;
@@ -43,29 +39,21 @@ class WeightFormState {
   /// Error message to display (e.g., image decode failure).
   final String? errorMessage;
 
-  /// Whether the top view has been captured and processed.
-  bool get hasTopView => topViewResult != null;
-
   /// Whether the side view has been captured and processed.
   bool get hasSideView => sideViewResult != null;
 
   /// Whether the "Calculate" button should be enabled:
-  /// both views captured and not currently processing.
-  bool get canCalculate => hasTopView && hasSideView && !isProcessing;
+  /// side view captured and not currently processing.
+  bool get canCalculate => hasSideView && !isProcessing;
 
   WeightFormState copyWith({
-    ViewEstimationResult? topViewResult,
     ViewEstimationResult? sideViewResult,
     bool? isProcessing,
     String? errorMessage,
-    bool clearTopView = false,
     bool clearSideView = false,
     bool clearError = false,
   }) {
     return WeightFormState(
-      topViewResult: clearTopView
-          ? null
-          : (topViewResult ?? this.topViewResult),
       sideViewResult: clearSideView
           ? null
           : (sideViewResult ?? this.sideViewResult),
@@ -75,17 +63,14 @@ class WeightFormState {
   }
 }
 
-/// Manages the two-photo capture and inference flow for weight estimation.
+/// Manages the side-view capture and inference flow for weight estimation.
 ///
 /// **Frontend usage:**
 /// ```dart
 /// // Watch state
 /// final formState = ref.watch(weightFormProvider);
 ///
-/// // User captures top view (UI provides the image path)
-/// await ref.read(weightFormProvider.notifier).processTopView('/path/to/image.jpg');
-///
-/// // User captures side view
+/// // User captures side view (UI provides the image path)
 /// await ref.read(weightFormProvider.notifier).processSideView('/path/to/image.jpg');
 ///
 /// // User taps "Calculate"
@@ -119,28 +104,6 @@ class WeightForm extends _$WeightForm {
     }
   }
 
-  /// Process a captured top-view image through the TFLite model.
-  ///
-  /// [imagePath] — absolute path to the image file from camera/gallery.
-  Future<void> processTopView(String imagePath) async {
-    state = state.copyWith(isProcessing: true, clearError: true);
-
-    try {
-      final service = ref.read(weightEstimationServiceProvider);
-      final result = await service.estimateFromImage(
-        imagePath: imagePath,
-        viewType: 'top',
-      );
-      state = state.copyWith(topViewResult: result, isProcessing: false);
-    } catch (e) {
-      AppLogger.error('Top view inference failed', tag: 'WEIGHT', error: e);
-      state = state.copyWith(
-        isProcessing: false,
-        errorMessage: 'Failed to process top view image. Please try again.',
-      );
-    }
-  }
-
   /// Process a captured side-view image through the TFLite model.
   ///
   /// [imagePath] — absolute path to the image file from camera/gallery.
@@ -163,14 +126,6 @@ class WeightForm extends _$WeightForm {
     }
   }
 
-  /// Retake the top-view photo — clears the current top-view result.
-  ///
-  /// **Frontend notes:**
-  /// Call this before opening the camera/gallery for a new top-view capture.
-  void retakeTopView() {
-    state = state.copyWith(clearTopView: true, clearError: true);
-  }
-
   /// Retake the side-view photo — clears the current side-view result.
   ///
   /// **Frontend notes:**
@@ -182,7 +137,7 @@ class WeightForm extends _$WeightForm {
   /// Calculate the final weight estimate and price, then set the result.
   ///
   /// **Preconditions:**
-  /// - Both views must be captured and non-ambiguous (check `state.canCalculate`).
+  /// - Side view must be captured and non-ambiguous (check `state.canCalculate`).
   ///
   /// **Frontend notes:**
   /// - After this completes, read [weightResultProvider] and navigate
@@ -191,7 +146,7 @@ class WeightForm extends _$WeightForm {
   Future<bool> calculate() async {
     if (!state.canCalculate) {
       state = state.copyWith(
-        errorMessage: 'Please capture both views with clear results first.',
+        errorMessage: 'Please capture the side view with a clear result first.',
       );
       return false;
     }
@@ -201,9 +156,8 @@ class WeightForm extends _$WeightForm {
     try {
       final service = ref.read(weightEstimationServiceProvider);
 
-      // Pick the best estimate from both views.
-      final estimation = service.calculateBestEstimate(
-        topViewResult: state.topViewResult!,
+      // Pick the estimate from the side view.
+      final estimation = service.calculateEstimate(
         sideViewResult: state.sideViewResult!,
       );
 
