@@ -23,10 +23,15 @@ part 'weight_providers.g.dart';
 ///   non-ambiguous result.
 /// - On error, display [errorMessage] as a snackbar/toast.
 /// - [isProcessing] — show a loading overlay during inference.
+/// - [processingMessage] / [processingRound] / [processingCount] — shown in
+///   the overlay to keep the user informed during the ~20 s two-round TTA.
 class WeightFormState {
   const WeightFormState({
     this.sideViewResult,
     this.isProcessing = false,
+    this.processingMessage,
+    this.processingRound = 0,
+    this.processingCount = 0,
     this.errorMessage,
   });
 
@@ -35,6 +40,15 @@ class WeightFormState {
 
   /// `true` while an inference is running.
   final bool isProcessing;
+
+  /// Human-readable status text shown in the overlay.
+  final String? processingMessage;
+
+  /// Current TTA round (1 = range detection, 2 = fine-grain detection).
+  final int processingRound;
+
+  /// Number of inferences completed in the current round.
+  final int processingCount;
 
   /// Error message to display (e.g., image decode failure).
   final String? errorMessage;
@@ -49,15 +63,24 @@ class WeightFormState {
   WeightFormState copyWith({
     ViewEstimationResult? sideViewResult,
     bool? isProcessing,
+    String? processingMessage,
+    int? processingRound,
+    int? processingCount,
     String? errorMessage,
     bool clearSideView = false,
     bool clearError = false,
+    bool clearProcessingMessage = false,
   }) {
     return WeightFormState(
       sideViewResult: clearSideView
           ? null
           : (sideViewResult ?? this.sideViewResult),
       isProcessing: isProcessing ?? this.isProcessing,
+      processingMessage: clearProcessingMessage
+          ? null
+          : (processingMessage ?? this.processingMessage),
+      processingRound: processingRound ?? this.processingRound,
+      processingCount: processingCount ?? this.processingCount,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
   }
@@ -104,23 +127,49 @@ class WeightForm extends _$WeightForm {
     }
   }
 
-  /// Process a captured side-view image through the TFLite model.
+  /// Process a captured side-view image through the two-round TTA pipeline.
   ///
   /// [imagePath] — absolute path to the image file from camera/gallery.
+  ///
+  /// The two rounds (~10 s each) provide a statistically robust estimate:
+  ///   Round 1 — narrow to a 10 kg range.
+  ///   Round 2 — pinpoint the exact weight within that range.
   Future<void> processSideView(String imagePath) async {
-    state = state.copyWith(isProcessing: true, clearError: true);
+    state = state.copyWith(
+      isProcessing: true,
+      clearError: true,
+      processingRound: 1,
+      processingCount: 0,
+      processingMessage: 'Preparing image...',
+    );
 
     try {
       final service = ref.read(weightEstimationServiceProvider);
       final result = await service.estimateFromImage(
         imagePath: imagePath,
         viewType: 'side',
+        onProgress: (round, count, message) {
+          state = state.copyWith(
+            processingRound: round,
+            processingCount: count,
+            processingMessage: message,
+          );
+        },
       );
-      state = state.copyWith(sideViewResult: result, isProcessing: false);
+      state = state.copyWith(
+        sideViewResult: result,
+        isProcessing: false,
+        clearProcessingMessage: true,
+        processingRound: 0,
+        processingCount: 0,
+      );
     } catch (e) {
       AppLogger.error('Side view inference failed', tag: 'WEIGHT', error: e);
       state = state.copyWith(
         isProcessing: false,
+        clearProcessingMessage: true,
+        processingRound: 0,
+        processingCount: 0,
         errorMessage: 'Failed to process side view image. Please try again.',
       );
     }

@@ -11,7 +11,7 @@ import '../widgets/total_price_tab.dart';
 /// Main screen for pig weight estimation.
 ///
 /// Contains two tabs:
-/// - **① Estimate Weight** — capture a side-view photo,
+/// - **① Estimate Weight** — capture a top-view photo,
 ///   run TFLite inference, and trigger the weight calculation.
 /// - **② Total Price** — display the estimated weight and computed
 ///   market value based on the current SRP.

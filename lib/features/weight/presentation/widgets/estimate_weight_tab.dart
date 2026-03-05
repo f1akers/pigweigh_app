@@ -7,7 +7,7 @@ import '../../../../core/utils/logger.dart';
 import '../../data/models/weight_estimation_model.dart';
 import '../../data/providers/weight_providers.dart';
 
-/// Tab 1 — Capture side-view photo, run TFLite inference,
+/// Tab 1 — Capture top-view photo, run TFLite inference,
 /// and trigger the final weight + price calculation.
 ///
 /// [onCalculateSuccess] is called after a successful calculate(), so the
@@ -141,13 +141,13 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── Side View capture panel ──────────────────────────────────
+              // ── Top View capture panel ──────────────────────────────────
               _CapturePanel(
-                label: 'Capture: Side View',
-                hint: 'Photo taken from the side of the pig',
+                label: 'Capture: Top View',
+                hint: 'Photo taken from above the pig',
                 result: formState.sideViewResult,
                 isProcessing: formState.isProcessing,
-                onTap: () => _captureView('side'),
+                onTap: () => _captureView('top'),
               ),
 
               const SizedBox(height: 36),
@@ -164,7 +164,7 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
               // ── Helper text ──────────────────────────────────────────────
               if (!formState.hasSideView)
                 Text(
-                  'Capture the side view to enable calculation.',
+                  'Capture the top view to enable calculation.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.black45,
@@ -180,24 +180,61 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
         if (formState.isProcessing)
           Container(
             color: Colors.black.withAlpha(100),
-            child: const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 3,
-                  ),
-                  SizedBox(height: 16),
-                  Text(
-                    'Analyzing image…',
-                    style: TextStyle(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(
                       color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
+                      strokeWidth: 3,
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 20),
+                    // Round indicator
+                    if (formState.processingRound > 0)
+                      Text(
+                        'Round ${formState.processingRound} of 2',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    const SizedBox(height: 6),
+                    Text(
+                      formState.processingMessage ?? 'Analyzing image…',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (formState.processingCount > 0) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '${formState.processingCount} samples processed',
+                        style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Please be patient — this takes about 20 seconds.\n'
+                      'Running statistical analysis for best accuracy.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

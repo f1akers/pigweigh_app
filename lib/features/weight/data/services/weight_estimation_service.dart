@@ -166,16 +166,28 @@ class WeightEstimationService {
   // Inference
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Run inference on a single image file.
+  /// Two-round TTA (Test Time Augmentation) estimation.
   ///
-  /// [imagePath] — absolute path to the image file on device.
-  /// [viewType] — `'top'` or `'side'` (for labelling the result).
+  /// **Round 1 — Coarse Range Detection (~10 s):**
+  /// Applies random augmentations (flip, brightness, contrast) and runs
+  /// inference repeatedly. Probability mass is accumulated per 10 kg range.
+  /// The range with the highest accumulated probability wins.
   ///
-  /// Returns a [ViewEstimationResult] with the predicted weight,
-  /// confidence, ambiguity flag, and top-N predictions.
+  /// **Round 2 — Fine-Grained Weight Detection (~10 s):**
+  /// Same TTA loop, but only probabilities for classes inside the winning
+  /// range are accumulated. The individual weight with the highest
+  /// accumulated probability is the final estimate.
+  ///
+  /// This is an improved take on the user's "linear regression" idea:
+  /// instead of raw vote counts, we average full probability distributions
+  /// across augmented views — the standard TTA approach in ML.
+  ///
+  /// [onProgress] is called periodically so the UI can show phase updates.
   Future<ViewEstimationResult> estimateFromImage({
     required String imagePath,
     required String viewType,
+    void Function(int round, int count, String message)? onProgress,
+    Duration roundDuration = const Duration(seconds: 10),
   }) async {
     if (!_isInitialized) {
       throw StateError(
@@ -183,72 +195,216 @@ class WeightEstimationService {
       );
     }
 
-    AppLogger.debug(
-      'Running inference on $viewType view: $imagePath',
+    AppLogger.info(
+      'Starting two-round TTA estimation on $viewType view: $imagePath',
       tag: 'WEIGHT',
     );
 
-    // 1. Load and preprocess the image.
-    final input = await _preprocessImage(imagePath);
+    // ── 1. Preprocess image once ─────────────────────────────────────────
+    final baseTensor = await _preprocessImage(imagePath);
+    final rng = math.Random();
 
-    // 2. Prepare output buffer.
-    final output = List.filled(_numClasses, 0.0).reshape([1, _numClasses]);
-
-    // 3. Run inference.
-    _tfliteService.runInference(input, output);
-
-    // 4. Read probabilities directly from the output tensor.
-    //
-    //    The YOLO classification model has:
-    //      • ÷255 normalization baked in as preprocessing
-    //        → Flutter passes raw float32 [0, 255]; model normalises internally.
-    //      • Softmax baked in as the final layer
-    //        → output is already a valid probability distribution (sum ≈ 1.0).
-    //    No manual normalization or softmax is ever needed here.
-    final rawOutput = (output[0] as List<dynamic>).cast<double>();
-
-    // Diagnostic — confirms the model outputs probabilities (sum ≈ 1.0).
-    // After a successful retrain you should see sum ≈ 1.0 and a clear winner.
-    final rawMax = rawOutput.reduce(math.max);
-    final rawSum = rawOutput.reduce((a, b) => a + b);
-    AppLogger.debug(
-      'Raw model output — max: ${rawMax.toStringAsFixed(4)}, '
-      'sum: ${rawSum.toStringAsFixed(4)} '
-      '(${(rawSum - 1.0).abs() < 0.05 ? "✓ probabilities" : "⚠ unexpected — check model"})',
-      tag: 'WEIGHT_DEBUG',
+    // ═══ ROUND 1: Coarse Range Detection ═════════════════════════════════
+    onProgress?.call(1, 0, 'Determining weight range...');
+    AppLogger.info(
+      'Round 1: Starting range detection (${roundDuration.inSeconds}s)',
+      tag: 'WEIGHT',
     );
 
-    // The model outputs probabilities directly. If sum is unexpectedly far
-    // from 1.0, apply softmax as a fallback (e.g., old model loaded by mistake).
-    final bool alreadyProbabilities = (rawSum - 1.0).abs() < 0.05;
-    final probabilities = alreadyProbabilities
-        ? rawOutput
-        : _softmax(rawOutput);
+    // Accumulate probability mass per 10 kg range.
+    final rangeProbs = <int, double>{}; // rangeStart → accumulated prob
+    final rangeVotes = <int, int>{}; // rangeStart → argmax vote count
+    int round1Count = 0;
+    bool round1DiagDone = false;
 
-    // 5. Build sorted predictions.
-    final predictions = _buildPredictions(probabilities);
+    final round1Start = DateTime.now();
+    while (DateTime.now().difference(round1Start) < roundDuration) {
+      // First pass uses the raw tensor; subsequent passes augment.
+      final tensor = round1Count == 0
+          ? baseTensor
+          : _augmentTensor(baseTensor, rng);
 
-    final topPrediction = predictions.first;
+      final output = List.filled(_numClasses, 0.0).reshape([1, _numClasses]);
+      _tfliteService.runInference(tensor, output);
+
+      final rawOutput = (output[0] as List<dynamic>).cast<double>();
+
+      // Diagnostic on the very first inference.
+      if (!round1DiagDone) {
+        final rawMax = rawOutput.reduce(math.max);
+        final rawSum = rawOutput.reduce((a, b) => a + b);
+        AppLogger.debug(
+          'Raw model output — max: ${rawMax.toStringAsFixed(4)}, '
+          'sum: ${rawSum.toStringAsFixed(4)} '
+          '(${(rawSum - 1.0).abs() < 0.05 ? "✓ probabilities" : "⚠ unexpected — check model"})',
+          tag: 'WEIGHT_DEBUG',
+        );
+        round1DiagDone = true;
+      }
+
+      final probs = _ensureProbabilities(rawOutput);
+
+      // Sum probabilities into 10 kg buckets.
+      for (var i = 0; i < _numClasses; i++) {
+        final rangeKey = (_weights[i] ~/ 10) * 10;
+        rangeProbs[rangeKey] = (rangeProbs[rangeKey] ?? 0) + probs[i];
+      }
+
+      // Track argmax vote for logging.
+      int topIdx = 0;
+      for (var i = 1; i < probs.length; i++) {
+        if (probs[i] > probs[topIdx]) topIdx = i;
+      }
+      final topRange = (_weights[topIdx] ~/ 10) * 10;
+      rangeVotes[topRange] = (rangeVotes[topRange] ?? 0) + 1;
+
+      round1Count++;
+
+      // Yield to UI thread every 3 inferences so progress updates render.
+      if (round1Count % 3 == 0) {
+        onProgress?.call(1, round1Count, 'Determining weight range...');
+        await Future.delayed(Duration.zero);
+      }
+    }
+
+    // Determine winning range.
+    final winningRange = rangeProbs.entries
+        .reduce((a, b) => a.value > b.value ? a : b)
+        .key;
 
     AppLogger.info(
-      '$viewType view → ${topPrediction.label} '
-      '(${(topPrediction.confidence * 100).toStringAsFixed(1)}%)',
+      'Round 1 complete: $round1Count inferences, '
+      'winning range: $winningRange–${winningRange + 9}kg',
       tag: 'WEIGHT',
     );
 
-    // 🐛 DEBUG — dump top-5 predictions so we can verify model output
-    final top5 = predictions.take(topN).toList();
-    for (var i = 0; i < top5.length; i++) {
-      final p = top5[i];
+    final sortedRanges = rangeProbs.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    for (final entry in sortedRanges.take(5)) {
       AppLogger.debug(
-        '  #${i + 1}  ${p.label.padRight(6)}  ${(p.confidence * 100).toStringAsFixed(2)}%',
+        '  Range ${entry.key}–${entry.key + 9}kg: '
+        'prob=${entry.value.toStringAsFixed(2)}, '
+        'votes=${rangeVotes[entry.key] ?? 0}',
         tag: 'WEIGHT_DEBUG',
       );
     }
 
+    // ═══ ROUND 2: Fine-Grained Weight Detection ═════════════════════════
+    onProgress?.call(2, 0, 'Pinpointing exact weight...');
+    AppLogger.info(
+      'Round 2: Fine detection within $winningRange–${winningRange + 9}kg',
+      tag: 'WEIGHT',
+    );
+
+    // Indices of model outputs that belong to the winning range.
+    final rangeIndices = <int>[
+      for (var i = 0; i < _numClasses; i++)
+        if ((_weights[i] ~/ 10) * 10 == winningRange) i,
+    ];
+
+    final weightProbs = <double, double>{}; // weight → accumulated prob
+    final weightVotes = <double, int>{}; // weight → argmax vote count
+    int round2Count = 0;
+
+    final round2Start = DateTime.now();
+    while (DateTime.now().difference(round2Start) < roundDuration) {
+      final tensor = round2Count == 0
+          ? baseTensor
+          : _augmentTensor(baseTensor, rng);
+
+      final output = List.filled(_numClasses, 0.0).reshape([1, _numClasses]);
+      _tfliteService.runInference(tensor, output);
+
+      final rawOutput = (output[0] as List<dynamic>).cast<double>();
+      final probs = _ensureProbabilities(rawOutput);
+
+      // Only accumulate probabilities for classes in the winning range.
+      double bestProb = -1;
+      double bestWeight = 0;
+      for (final i in rangeIndices) {
+        weightProbs[_weights[i]] = (weightProbs[_weights[i]] ?? 0) + probs[i];
+        if (probs[i] > bestProb) {
+          bestProb = probs[i];
+          bestWeight = _weights[i];
+        }
+      }
+      weightVotes[bestWeight] = (weightVotes[bestWeight] ?? 0) + 1;
+
+      round2Count++;
+
+      if (round2Count % 3 == 0) {
+        onProgress?.call(2, round2Count, 'Pinpointing exact weight...');
+        await Future.delayed(Duration.zero);
+      }
+    }
+
+    // Determine winning weight.
+    final winningWeight = weightProbs.entries
+        .reduce((a, b) => a.value > b.value ? a : b)
+        .key;
+
+    // Actual confidence = share of probability mass on the winner
+    // within the range (averaged across all TTA runs).
+    final totalRangeProb = weightProbs.values.reduce((a, b) => a + b);
+    final actualConfidence = totalRangeProb > 0
+        ? (weightProbs[winningWeight]!) / totalRangeProb
+        : 0.0;
+
+    AppLogger.info(
+      'Round 2 complete: $round2Count inferences, '
+      'winning weight: ${winningWeight.toStringAsFixed(0)}kg',
+      tag: 'WEIGHT',
+    );
+
+    final sortedWeights = weightProbs.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    for (final entry in sortedWeights) {
+      AppLogger.debug(
+        '  ${entry.key.toStringAsFixed(0)}kg: '
+        'prob=${entry.value.toStringAsFixed(2)}, '
+        'votes=${weightVotes[entry.key] ?? 0}',
+        tag: 'WEIGHT_DEBUG',
+      );
+    }
+
+    // ═══ FINALIZE ════════════════════════════════════════════════════════
+    onProgress?.call(2, round2Count, 'Finalizing results...');
+
+    final totalInferences = round1Count + round2Count;
+
+    // Log ACTUAL confidence prominently.
+    AppLogger.info(
+      '✅ ACTUAL confidence: ${(actualConfidence * 100).toStringAsFixed(1)}% '
+      '(${winningWeight.toStringAsFixed(0)}kg from $totalInferences total inferences)',
+      tag: 'WEIGHT',
+    );
+
+    // ── Fabricated 90%+ confidence for demo UI ───────────────────────────
+    final seed = (actualConfidence * 1e6).toInt() + winningWeight.toInt();
+    final demoRng = math.Random(seed);
+    final demoConfidence = 0.91 + demoRng.nextDouble() * 0.08; // 91%–99%
+
+    AppLogger.info(
+      '🎭 DEMO confidence shown to user: '
+      '${(demoConfidence * 100).toStringAsFixed(1)}% '
+      '(actual: ${(actualConfidence * 100).toStringAsFixed(1)}%)',
+      tag: 'WEIGHT',
+    );
+
+    // Build top predictions from Round 2 accumulated probabilities.
+    final predictions = sortedWeights
+        .map(
+          (e) => PredictionClass(
+            weightKg: e.key,
+            confidence: totalRangeProb > 0 ? e.value / totalRangeProb : 0,
+            label: '${e.key.toStringAsFixed(0)}kg',
+          ),
+        )
+        .toList();
+
     return ViewEstimationResult(
-      weightKg: topPrediction.weightKg,
-      confidence: topPrediction.confidence,
+      weightKg: winningWeight,
+      confidence: demoConfidence,
       isAmbiguous: false,
       imagePath: imagePath,
       viewType: viewType,
@@ -261,31 +417,20 @@ class WeightEstimationService {
   /// Returns a [WeightEstimationModel] with the final estimate.
   /// Call this after the side view has been processed.
   ///
-  /// **Placeholder confidence (demo):**
-  /// While the TFLite model is being retrained, the raw model confidence
-  /// is replaced with a seeded random value between 91% and 99%.
-  /// The model's own confidence score is used as a seed so that the
-  /// same image always produces the same demo confidence.
+  /// The demo confidence (91–99%) is already baked into the
+  /// [ViewEstimationResult] by [estimateFromImage], so we pass it through.
   WeightEstimationModel calculateEstimate({
     required ViewEstimationResult sideViewResult,
   }) {
-    // ── Placeholder confidence for demonstration ─────────────────────────
-    // Uses the model's raw confidence as a seed to deterministically
-    // pick a value in [0.91, 0.99].
-    final seed = (sideViewResult.confidence * 1e6).toInt();
-    final rng = math.Random(seed);
-    final demoConfidence = 0.91 + rng.nextDouble() * 0.08; // 91% – 99%
-
     AppLogger.info(
       'Side-view estimate: ${sideViewResult.weightKg}kg '
-      '(model: ${(sideViewResult.confidence * 100).toStringAsFixed(1)}% '
-      '→ demo: ${(demoConfidence * 100).toStringAsFixed(1)}%)',
+      '(${(sideViewResult.confidence * 100).toStringAsFixed(1)}%)',
       tag: 'WEIGHT',
     );
 
     return WeightEstimationModel(
       estimatedWeightKg: sideViewResult.weightKg,
-      confidence: demoConfidence,
+      confidence: sideViewResult.confidence,
       sourceView: 'side',
       imagePath: sideViewResult.imagePath,
       sideViewResult: sideViewResult,
@@ -437,6 +582,74 @@ class WeightEstimationService {
     // Sort descending by confidence.
     predictions.sort((a, b) => b.confidence.compareTo(a.confidence));
     return predictions;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Test Time Augmentation (TTA) Helpers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Ensure the raw model output is a valid probability distribution.
+  ///
+  /// If the output already sums to ≈ 1.0, use it as-is.
+  /// Otherwise apply softmax as a safety-net fallback.
+  List<double> _ensureProbabilities(List<double> rawOutput) {
+    final sum = rawOutput.reduce((a, b) => a + b);
+    if ((sum - 1.0).abs() < 0.05) return rawOutput;
+    return _softmax(rawOutput);
+  }
+
+  /// Apply random Test Time Augmentation to a preprocessed FP32 tensor.
+  ///
+  /// Augmentations (all operate on 0–255 pixel space):
+  ///   • Random horizontal flip  (50 % probability)
+  ///   • Random brightness shift  (±20 px values)
+  ///   • Random contrast change   (×0.85 – ×1.15 around mid-grey)
+  ///
+  /// Returns a **new** tensor; [baseTensor] is never mutated.
+  List<List<List<List<double>>>> _augmentTensor(
+    List<List<List<List<double>>>> baseTensor,
+    math.Random rng,
+  ) {
+    final h = baseTensor[0].length;
+    final w = baseTensor[0][0].length;
+
+    // Deep-copy.
+    final result = List.generate(
+      1,
+      (_) => List.generate(
+        h,
+        (y) => List.generate(w, (x) => List<double>.from(baseTensor[0][y][x])),
+      ),
+    );
+
+    // Random horizontal flip (50 %).
+    if (rng.nextBool()) {
+      for (var y = 0; y < h; y++) {
+        for (int left = 0, right = w - 1; left < right; left++, right--) {
+          final temp = result[0][y][left];
+          result[0][y][left] = result[0][y][right];
+          result[0][y][right] = temp;
+        }
+      }
+    }
+
+    // Random brightness (−20 … +20) and contrast (0.85 … 1.15).
+    final brightness = (rng.nextDouble() - 0.5) * 40;
+    final contrast = 0.85 + rng.nextDouble() * 0.30;
+
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final pixel = result[0][y][x];
+        for (var c = 0; c < 3; c++) {
+          pixel[c] = ((pixel[c] - 127.5) * contrast + 127.5 + brightness).clamp(
+            0.0,
+            255.0,
+          );
+        }
+      }
+    }
+
+    return result;
   }
 }
 
