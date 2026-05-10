@@ -88,9 +88,9 @@ class WeightEstimationService {
     AppLogger.debug('Loaded $_numClasses weight labels', tag: 'WEIGHT');
   }
 
-  /// Extract numeric weight from a label like "85kg".
+  /// Extract numeric weight from a label like "16 KG_Side" or "16 KG_Top".
   double _parseWeight(String label) {
-    return double.parse(label.replaceAll('kg', ''));
+    return double.parse(label.split(' ').first);
   }
 
   /// Inspect the loaded model's input/output tensors to determine
@@ -244,9 +244,9 @@ class WeightEstimationService {
 
       final probs = _ensureProbabilities(rawOutput);
 
-      // Sum probabilities into 10 kg buckets.
+      // Sum probabilities into 5 kg buckets.
       for (var i = 0; i < _numClasses; i++) {
-        final rangeKey = (_weights[i] ~/ 10) * 10;
+        final rangeKey = (_weights[i] ~/ 5) * 5;
         rangeProbs[rangeKey] = (rangeProbs[rangeKey] ?? 0) + probs[i];
       }
 
@@ -255,7 +255,7 @@ class WeightEstimationService {
       for (var i = 1; i < probs.length; i++) {
         if (probs[i] > probs[topIdx]) topIdx = i;
       }
-      final topRange = (_weights[topIdx] ~/ 10) * 10;
+      final topRange = (_weights[topIdx] ~/ 5) * 5;
       rangeVotes[topRange] = (rangeVotes[topRange] ?? 0) + 1;
 
       round1Count++;
@@ -274,7 +274,7 @@ class WeightEstimationService {
 
     AppLogger.info(
       'Round 1 complete: $round1Count inferences, '
-      'winning range: $winningRange–${winningRange + 9}kg',
+      'winning range: $winningRange–${winningRange + 4}kg',
       tag: 'WEIGHT',
     );
 
@@ -282,7 +282,7 @@ class WeightEstimationService {
       ..sort((a, b) => b.value.compareTo(a.value));
     for (final entry in sortedRanges.take(5)) {
       AppLogger.debug(
-        '  Range ${entry.key}–${entry.key + 9}kg: '
+        '  Range ${entry.key}–${entry.key + 4}kg: '
         'prob=${entry.value.toStringAsFixed(2)}, '
         'votes=${rangeVotes[entry.key] ?? 0}',
         tag: 'WEIGHT_DEBUG',
@@ -292,14 +292,14 @@ class WeightEstimationService {
     // ═══ ROUND 2: Fine-Grained Weight Detection ═════════════════════════
     onProgress?.call(2, 0, 'Pinpointing exact weight...');
     AppLogger.info(
-      'Round 2: Fine detection within $winningRange–${winningRange + 9}kg',
+      'Round 2: Fine detection within $winningRange–${winningRange + 4}kg',
       tag: 'WEIGHT',
     );
 
     // Indices of model outputs that belong to the winning range.
     final rangeIndices = <int>[
       for (var i = 0; i < _numClasses; i++)
-        if ((_weights[i] ~/ 10) * 10 == winningRange) i,
+        if ((_weights[i] ~/ 5) * 5 == winningRange) i,
     ];
 
     final weightProbs = <double, double>{}; // weight → accumulated prob
@@ -372,22 +372,9 @@ class WeightEstimationService {
 
     final totalInferences = round1Count + round2Count;
 
-    // Log ACTUAL confidence prominently.
     AppLogger.info(
-      '✅ ACTUAL confidence: ${(actualConfidence * 100).toStringAsFixed(1)}% '
+      '✅ Confidence: ${(actualConfidence * 100).toStringAsFixed(1)}% '
       '(${winningWeight.toStringAsFixed(0)}kg from $totalInferences total inferences)',
-      tag: 'WEIGHT',
-    );
-
-    // ── Fabricated 90%+ confidence for demo UI ───────────────────────────
-    final seed = (actualConfidence * 1e6).toInt() + winningWeight.toInt();
-    final demoRng = math.Random(seed);
-    final demoConfidence = 0.91 + demoRng.nextDouble() * 0.08; // 91%–99%
-
-    AppLogger.info(
-      '🎭 DEMO confidence shown to user: '
-      '${(demoConfidence * 100).toStringAsFixed(1)}% '
-      '(actual: ${(actualConfidence * 100).toStringAsFixed(1)}%)',
       tag: 'WEIGHT',
     );
 
@@ -404,7 +391,7 @@ class WeightEstimationService {
 
     return ViewEstimationResult(
       weightKg: winningWeight,
-      confidence: demoConfidence,
+      confidence: actualConfidence,
       isAmbiguous: false,
       imagePath: imagePath,
       viewType: viewType,
@@ -417,8 +404,7 @@ class WeightEstimationService {
   /// Returns a [WeightEstimationModel] with the final estimate.
   /// Call this after the side view has been processed.
   ///
-  /// The demo confidence (91–99%) is already baked into the
-  /// [ViewEstimationResult] by [estimateFromImage], so we pass it through.
+  /// The confidence from [estimateFromImage] is passed through as-is.
   WeightEstimationModel calculateEstimate({
     required ViewEstimationResult sideViewResult,
   }) {
