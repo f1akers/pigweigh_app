@@ -52,28 +52,31 @@ abstract class PredictionClass with _$PredictionClass {
       _$PredictionClassFromJson(json);
 }
 
-/// Result after side-view inference.
+/// Result after top-view and/or side-view inference.
 ///
 /// **Frontend notes:**
 /// - Show [estimatedWeightKg] as the final weight.
-/// - If the side-view result has `isAmbiguous == true`, the UI should prompt
-///   the user to retake the photo before allowing "Calculate".
+/// - [sourceView] indicates which photo ('top' or 'side') was selected.
+/// - The view with the higher confidence is selected; ties favour 'top'.
 @freezed
 abstract class WeightEstimationModel with _$WeightEstimationModel {
   const factory WeightEstimationModel({
-    /// Estimated weight in kg from the side-view inference.
+    /// Estimated weight in kg from the selected view.
     required double estimatedWeightKg,
 
-    /// Confidence of the prediction (0.0 – 1.0).
+    /// Confidence score of the selected view (0.0 – 1.0).
     required double confidence,
 
-    /// Which view produced the estimate (always `'side'`).
+    /// Which view produced the estimate (`'top'` or `'side'`).
     required String sourceView,
 
     /// File path of the image that produced the estimate.
     required String imagePath,
 
-    /// Full result for the side-view inference.
+    /// Full result for the top-view inference (null if not captured).
+    ViewEstimationResult? topViewResult,
+
+    /// Full result for the side-view inference (null if not captured).
     ViewEstimationResult? sideViewResult,
   }) = _WeightEstimationModel;
 

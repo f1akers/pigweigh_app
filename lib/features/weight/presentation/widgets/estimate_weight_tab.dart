@@ -38,7 +38,11 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
       );
       if (file == null) return;
 
-      await ref.read(weightFormProvider.notifier).processSideView(file.path);
+      if (viewType == 'top') {
+        await ref.read(weightFormProvider.notifier).processTopView(file.path);
+      } else {
+        await ref.read(weightFormProvider.notifier).processSideView(file.path);
+      }
     } catch (e) {
       AppLogger.error('Image pick failed', tag: 'WEIGHT_UI', error: e);
       if (mounted) {
@@ -144,10 +148,21 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
               // ── Top View capture panel ──────────────────────────────────
               _CapturePanel(
                 label: 'Capture: Top View',
-                hint: 'Photo taken from above the pig',
-                result: formState.sideViewResult,
+                hint: 'Photo taken from directly above the pig',
+                result: formState.topViewResult,
                 isProcessing: formState.isProcessing,
                 onTap: () => _captureView('top'),
+              ),
+
+              const SizedBox(height: 16),
+
+              // ── Side View capture panel ─────────────────────────────────
+              _CapturePanel(
+                label: 'Capture: Side View',
+                hint: 'Photo taken from the side of the pig',
+                result: formState.sideViewResult,
+                isProcessing: formState.isProcessing,
+                onTap: () => _captureView('side'),
               ),
 
               const SizedBox(height: 36),
@@ -162,9 +177,9 @@ class _EstimateWeightTabState extends ConsumerState<EstimateWeightTab> {
               const SizedBox(height: 24),
 
               // ── Helper text ──────────────────────────────────────────────
-              if (!formState.hasSideView)
+              if (!formState.hasTopView && !formState.hasSideView)
                 Text(
-                  'Capture the top view to enable calculation.',
+                  'Capture at least one view to enable calculation.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.black45,

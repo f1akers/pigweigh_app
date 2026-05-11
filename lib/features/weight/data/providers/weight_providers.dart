@@ -16,17 +16,18 @@ part 'weight_providers.g.dart';
 ///
 /// **Frontend expectations:**
 /// - Watch this provider for the current form state.
-/// - Show `sideViewResult` as a preview card when available.
-/// - If the result has `isAmbiguous == true`, show a warning badge on the
-///   card and disable the "Calculate" button.
-/// - The "Calculate" button is enabled only when the side view has a non-null,
-///   non-ambiguous result.
+/// - Show [topViewResult] and [sideViewResult] as preview cards when available.
+/// - The "Calculate" button is enabled when at least one view is captured and
+///   not currently processing.
+/// - On calculate, the view with the highest confidence is used; ties favour
+///   the top view.
 /// - On error, display [errorMessage] as a snackbar/toast.
 /// - [isProcessing] — show a loading overlay during inference.
 /// - [processingMessage] / [processingRound] / [processingCount] — shown in
 ///   the overlay to keep the user informed during the ~20 s two-round TTA.
 class WeightFormState {
   const WeightFormState({
+    this.topViewResult,
     this.sideViewResult,
     this.isProcessing = false,
     this.processingMessage,
@@ -34,6 +35,9 @@ class WeightFormState {
     this.processingCount = 0,
     this.errorMessage,
   });
+
+  /// Result of the top-view inference (null if not yet captured).
+  final ViewEstimationResult? topViewResult;
 
   /// Result of the side-view inference (null if not yet captured).
   final ViewEstimationResult? sideViewResult;
@@ -53,25 +57,33 @@ class WeightFormState {
   /// Error message to display (e.g., image decode failure).
   final String? errorMessage;
 
+  /// Whether the top view has been captured and processed.
+  bool get hasTopView => topViewResult != null;
+
   /// Whether the side view has been captured and processed.
   bool get hasSideView => sideViewResult != null;
 
   /// Whether the "Calculate" button should be enabled:
-  /// side view captured and not currently processing.
-  bool get canCalculate => hasSideView && !isProcessing;
+  /// at least one view captured and not currently processing.
+  bool get canCalculate => (hasTopView || hasSideView) && !isProcessing;
 
   WeightFormState copyWith({
+    ViewEstimationResult? topViewResult,
     ViewEstimationResult? sideViewResult,
     bool? isProcessing,
     String? processingMessage,
     int? processingRound,
     int? processingCount,
     String? errorMessage,
+    bool clearTopView = false,
     bool clearSideView = false,
     bool clearError = false,
     bool clearProcessingMessage = false,
   }) {
     return WeightFormState(
+      topViewResult: clearTopView
+          ? null
+          : (topViewResult ?? this.topViewResult),
       sideViewResult: clearSideView
           ? null
           : (sideViewResult ?? this.sideViewResult),
@@ -86,14 +98,17 @@ class WeightFormState {
   }
 }
 
-/// Manages the side-view capture and inference flow for weight estimation.
+/// Manages the top-view and side-view capture + inference flow for weight estimation.
 ///
 /// **Frontend usage:**
 /// ```dart
 /// // Watch state
 /// final formState = ref.watch(weightFormProvider);
 ///
-/// // User captures side view (UI provides the image path)
+/// // User captures top view (UI provides the image path)
+/// await ref.read(weightFormProvider.notifier).processTopView('/path/to/image.jpg');
+///
+/// // User captures side view (optional, for better accuracy)
 /// await ref.read(weightFormProvider.notifier).processSideView('/path/to/image.jpg');
 ///
 /// // User taps "Calculate"
@@ -127,14 +142,7 @@ class WeightForm extends _$WeightForm {
     }
   }
 
-  /// Process a captured side-view image through the two-round TTA pipeline.
-  ///
-  /// [imagePath] — absolute path to the image file from camera/gallery.
-  ///
-  /// The two rounds (~10 s each) provide a statistically robust estimate:
-  ///   Round 1 — narrow to a 10 kg range.
-  ///   Round 2 — pinpoint the exact weight within that range.
-  Future<void> processSideView(String imagePath) async {
+  Future<void> _processView(String imagePath, String viewType) async {
     state = state.copyWith(
       isProcessing: true,
       clearError: true,
@@ -147,7 +155,7 @@ class WeightForm extends _$WeightForm {
       final service = ref.read(weightEstimationServiceProvider);
       final result = await service.estimateFromImage(
         imagePath: imagePath,
-        viewType: 'side',
+        viewType: viewType,
         onProgress: (round, count, message) {
           state = state.copyWith(
             processingRound: round,
@@ -157,36 +165,59 @@ class WeightForm extends _$WeightForm {
         },
       );
       state = state.copyWith(
-        sideViewResult: result,
+        topViewResult: viewType == 'top' ? result : null,
+        sideViewResult: viewType == 'side' ? result : null,
         isProcessing: false,
         clearProcessingMessage: true,
         processingRound: 0,
         processingCount: 0,
       );
     } catch (e) {
-      AppLogger.error('Side view inference failed', tag: 'WEIGHT', error: e);
+      AppLogger.error(
+        '$viewType view inference failed',
+        tag: 'WEIGHT',
+        error: e,
+      );
       state = state.copyWith(
         isProcessing: false,
         clearProcessingMessage: true,
         processingRound: 0,
         processingCount: 0,
-        errorMessage: 'Failed to process side view image. Please try again.',
+        errorMessage:
+            'Failed to process $viewType view image. Please try again.',
       );
     }
   }
 
-  /// Retake the side-view photo — clears the current side-view result.
+  /// Process a captured top-view image through the two-round TTA pipeline.
   ///
-  /// **Frontend notes:**
-  /// Call this before opening the camera/gallery for a new side-view capture.
+  /// [imagePath] — absolute path to the image file from camera/gallery.
+  Future<void> processTopView(String imagePath) =>
+      _processView(imagePath, 'top');
+
+  /// Process a captured side-view image through the two-round TTA pipeline.
+  ///
+  /// [imagePath] — absolute path to the image file from camera/gallery.
+  Future<void> processSideView(String imagePath) =>
+      _processView(imagePath, 'side');
+
+  /// Retake the top-view photo — clears the current top-view result.
+  void retakeTopView() {
+    state = state.copyWith(clearTopView: true, clearError: true);
+  }
+
+  /// Retake the side-view photo — clears the current side-view result.
   void retakeSideView() {
     state = state.copyWith(clearSideView: true, clearError: true);
   }
 
   /// Calculate the final weight estimate and price, then set the result.
   ///
+  /// Selects the view with the highest confidence. If confidences are equal,
+  /// the top view is preferred.
+  ///
   /// **Preconditions:**
-  /// - Side view must be captured and non-ambiguous (check `state.canCalculate`).
+  /// - At least one view must be captured (check `state.canCalculate`).
   ///
   /// **Frontend notes:**
   /// - After this completes, read [weightResultProvider] and navigate
@@ -195,7 +226,7 @@ class WeightForm extends _$WeightForm {
   Future<bool> calculate() async {
     if (!state.canCalculate) {
       state = state.copyWith(
-        errorMessage: 'Please capture the side view with a clear result first.',
+        errorMessage: 'Please capture at least one view first.',
       );
       return false;
     }
@@ -205,9 +236,10 @@ class WeightForm extends _$WeightForm {
     try {
       final service = ref.read(weightEstimationServiceProvider);
 
-      // Pick the estimate from the side view.
+      // Pick the view with higher confidence; ties favour the top view.
       final estimation = service.calculateEstimate(
-        sideViewResult: state.sideViewResult!,
+        topViewResult: state.topViewResult,
+        sideViewResult: state.sideViewResult,
       );
 
       // Calculate the price.

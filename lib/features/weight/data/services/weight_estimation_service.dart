@@ -246,26 +246,52 @@ class WeightEstimationService {
     );
   }
 
-  /// Build the final weight estimate from the side-view inference result.
+  /// Build the final weight estimate from the captured view results.
   ///
-  /// Returns a [WeightEstimationModel] with the final estimate.
-  /// Call this after the side view has been processed.
-  ///
-  /// The confidence from [estimateFromImage] is passed through as-is.
+  /// Selects the view with the highest confidence. If confidences are equal,
+  /// the top view is preferred. At least one of [topViewResult] or
+  /// [sideViewResult] must be non-null.
   WeightEstimationModel calculateEstimate({
-    required ViewEstimationResult sideViewResult,
+    ViewEstimationResult? topViewResult,
+    ViewEstimationResult? sideViewResult,
   }) {
+    assert(
+      topViewResult != null || sideViewResult != null,
+      'At least one view result must be provided.',
+    );
+
+    // Pick the view with higher confidence; ties favour the top view.
+    final ViewEstimationResult selected;
+    final String sourceView;
+
+    if (topViewResult != null && sideViewResult != null) {
+      if (sideViewResult.confidence > topViewResult.confidence) {
+        selected = sideViewResult;
+        sourceView = 'side';
+      } else {
+        selected = topViewResult;
+        sourceView = 'top';
+      }
+    } else if (topViewResult != null) {
+      selected = topViewResult;
+      sourceView = 'top';
+    } else {
+      selected = sideViewResult!;
+      sourceView = 'side';
+    }
+
     AppLogger.info(
-      'Side-view estimate: ${sideViewResult.weightKg}kg '
-      '(${(sideViewResult.confidence * 100).toStringAsFixed(1)}%)',
+      'Selected $sourceView view: ${selected.weightKg}kg '
+      '(${(selected.confidence * 100).toStringAsFixed(1)}%)',
       tag: 'WEIGHT',
     );
 
     return WeightEstimationModel(
-      estimatedWeightKg: sideViewResult.weightKg,
-      confidence: sideViewResult.confidence,
-      sourceView: 'side',
-      imagePath: sideViewResult.imagePath,
+      estimatedWeightKg: selected.weightKg,
+      confidence: selected.confidence,
+      sourceView: sourceView,
+      imagePath: selected.imagePath,
+      topViewResult: topViewResult,
       sideViewResult: sideViewResult,
     );
   }
