@@ -32,5 +32,3 @@
 38 KG_Top
 46 KG_Side
 46 KG_Top
-46 KG_Top
-46 KG_Side

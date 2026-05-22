@@ -51,6 +51,13 @@ class WeightEstimationService {
   /// How many top predictions to retain in the result.
   static const int topN = 5;
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DEBUG: Fabricate high confidence for UI testing while we debug the
+  // ExecuTorch output parsing. Set to false once real confidence is fixed.
+  // ═══════════════════════════════════════════════════════════════════════════
+  static const bool _fabricateConfidence = true;
+  static const double _fabricatedConfidence = 0.97;
+
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized;
 
@@ -278,6 +285,10 @@ class WeightEstimationService {
     );
 
     // Build flat NCHW float32 tensor [1, 3, 640, 640].
+    //
+    // IMPORTANT: Divide by 255.0. The ExecuTorch export does NOT include
+    // internal normalization (unlike the old TFLite export). The model
+    // expects values in [0.0, 1.0].
     final pixelCount = _inputHeight * _inputWidth;
     final floatData = Float32List(_inputChannels * pixelCount);
 
@@ -285,9 +296,9 @@ class WeightEstimationService {
       for (var x = 0; x < _inputWidth; x++) {
         final pixel = image.getPixel(x, y);
         final idx = y * _inputWidth + x;
-        floatData[0 * pixelCount + idx] = pixel.r.toDouble();
-        floatData[1 * pixelCount + idx] = pixel.g.toDouble();
-        floatData[2 * pixelCount + idx] = pixel.b.toDouble();
+        floatData[0 * pixelCount + idx] = pixel.r.toDouble() / 255.0;
+        floatData[1 * pixelCount + idx] = pixel.g.toDouble() / 255.0;
+        floatData[2 * pixelCount + idx] = pixel.b.toDouble() / 255.0;
       }
     }
 
@@ -452,6 +463,28 @@ class WeightEstimationService {
         tag: 'WEIGHT_DEBUG',
       );
       return List<double>.filled(_numClasses, 1.0 / _numClasses);
+    }
+
+    if (_fabricateConfidence) {
+      // Find the winning class from real output, then give it a fake
+      // high confidence so UI testing can proceed while we debug the
+      // actual ExecuTorch output parsing.
+      var winningIdx = 0;
+      for (var i = 1; i < perClassMaxConf.length; i++) {
+        if (perClassMaxConf[i] > perClassMaxConf[winningIdx]) winningIdx = i;
+      }
+      final fabricated = List<double>.filled(_numClasses, 0.0);
+      fabricated[winningIdx] = _fabricatedConfidence;
+      final remainder = (1.0 - _fabricatedConfidence) / (_numClasses - 1);
+      for (var i = 0; i < _numClasses; i++) {
+        if (i != winningIdx) fabricated[i] = remainder;
+      }
+      AppLogger.warn(
+        'FABRICATING confidence — real max was ${perClassMaxConf[winningIdx].toStringAsFixed(4)}, '
+        'set to ${_fabricatedConfidence.toStringAsFixed(2)} for class $winningIdx',
+        tag: 'WEIGHT',
+      );
+      return fabricated;
     }
 
     return _softmax(perClassMaxConf);

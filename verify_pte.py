@@ -153,12 +153,13 @@ def main() -> None:
         sys.exit(f"ERROR: Could not load image — {e}")
 
     img_lb = letterbox_resize(img, 640)
-    arr = np.array(img_lb, dtype=np.float32)  # [H, W, 3] uint8 → float32 [0,255]
+    # uint8 [0,255] → float32 [0,1] (YOLOv8 expects normalized input)
+    arr = np.array(img_lb, dtype=np.float32) / 255.0
 
     print(f"  Original size : {img.size}")
     print(f"  Letterbox to  : 640x640")
-    print(f"  Pixel [0,0]   : R={arr[0, 0, 0]:.1f}  G={arr[0, 0, 1]:.1f}  B={arr[0, 0, 2]:.1f}")
-    print(f"  Tensor stats  : min={arr.min():.1f}  max={arr.max():.1f}  mean={arr.mean():.2f}")
+    print(f"  Pixel [0,0]   : R={arr[0, 0, 0]:.3f}  G={arr[0, 0, 1]:.3f}  B={arr[0, 0, 2]:.3f}")
+    print(f"  Tensor stats  : min={arr.min():.3f}  max={arr.max():.3f}  mean={arr.mean():.3f}")
 
     # Convert HWC → NCHW
     # arr is [H, W, 3]; we need [1, 3, H, W]
