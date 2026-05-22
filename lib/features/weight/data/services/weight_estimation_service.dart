@@ -43,6 +43,18 @@ class WeightEstimationService {
   /// Number of output classes.
   int _numClasses = 0;
 
+  /// Whether the loaded model is a detection model (3D output) as opposed to
+  /// a classification model (2D output).
+  bool _isDetectionModel = false;
+
+  /// Actual model output shape.  Used to allocate the inference output buffer
+  /// when the model differs from the simple [1, _numClasses] shape that a
+  /// classification model produces.
+  List<int> _outputShape = [];
+
+  /// Confidence threshold for filtering detection boxes.
+  static const double _detectionConfThreshold = 0.25;
+
   /// How many top predictions to retain in the result.
   static const int topN = 5;
 
@@ -67,7 +79,8 @@ class WeightEstimationService {
       'WeightEstimationService initialized — '
       '${_labels.length} classes, '
       'input: ${_inputHeight}x$_inputWidth x$_inputChannels '
-      '(${_isFloat32Input ? "float32" : "uint8"})',
+      '(${_isFloat32Input ? "float32" : "uint8"}), '
+      'mode: ${_isDetectionModel ? "detection" : "classification"}',
       tag: 'WEIGHT',
     );
   }
@@ -121,9 +134,15 @@ class WeightEstimationService {
       _isFloat32Input = inputType == TensorType.float32;
 
       final outputTensor = interpreter.getOutputTensor(0);
-      final outputShape = outputTensor.shape; // e.g., [1, 95]
+      final outputShape = outputTensor.shape; // e.g., [1, 95] or [1, 300, 6]
       final outputParams = outputTensor.params;
-      if (outputShape.length >= 2) {
+
+      _outputShape = List<int>.from(outputShape);
+
+      if (outputShape.length == 3) {
+        _isDetectionModel = true;
+      } else if (outputShape.length >= 2) {
+        _isDetectionModel = false;
         _numClasses = outputShape[1];
       }
 
@@ -148,7 +167,8 @@ class WeightEstimationService {
         'isFloat32=$_isFloat32Input\n'
         '  input  : quantScale=${inputParams.scale}  '
         'quantZeroPoint=${inputParams.zeroPoint}\n'
-        '  output : shape=$outputShape  classes=$_numClasses\n'
+        '  output : shape=$outputShape  classes=$_numClasses  '
+        'detection=$_isDetectionModel\n'
         '  output : quantScale=${outputParams.scale}  '
         'quantZeroPoint=${outputParams.zeroPoint}\n'
         '═══════════════════════════════',
@@ -195,10 +215,19 @@ class WeightEstimationService {
     // ── Preprocess & infer ────────────────────────────────────────────────
     final tensor = await _preprocessImage(imagePath);
 
-    final output = List.filled(_numClasses, 0.0).reshape([1, _numClasses]);
-    _tfliteService.runInference(tensor, output);
-
-    final rawOutput = (output[0] as List<dynamic>).cast<double>();
+    final List<double> rawOutput;
+    if (_isDetectionModel) {
+      final numBoxes = _outputShape[1];
+      final numValues = _outputShape[2];
+      final output = List.filled(numBoxes * numValues, 0.0)
+          .reshape([1, numBoxes, numValues]);
+      _tfliteService.runInference(tensor, output);
+      rawOutput = _parseDetectionOutput(output);
+    } else {
+      final output = List.filled(_numClasses, 0.0).reshape([1, _numClasses]);
+      _tfliteService.runInference(tensor, output);
+      rawOutput = (output[0] as List<dynamic>).cast<double>();
+    }
 
     final rawMax = rawOutput.reduce(math.max);
     final rawSum = rawOutput.reduce((a, b) => a + b);
@@ -332,13 +361,16 @@ class WeightEstimationService {
       tag: 'WEIGHT_DEBUG',
     );
 
-    // Resize to model input dimensions.
-    image = img.copyResize(
-      image,
-      width: _inputWidth,
-      height: _inputHeight,
-      interpolation: img.Interpolation.linear,
-    );
+    if (_isDetectionModel) {
+      image = _letterboxResize(image);
+    } else {
+      image = img.copyResize(
+        image,
+        width: _inputWidth,
+        height: _inputHeight,
+        interpolation: img.Interpolation.linear,
+      );
+    }
 
     // ── Pixel-level sanity check (top-left 3×3 sample) ──────────────────────
     // Shows the raw channel values coming out of the image package.
@@ -404,9 +436,109 @@ class WeightEstimationService {
     return input;
   }
 
+  /// Letterbox-resize for detection models: scale the image to fit within
+  /// [_inputWidth]×[_inputHeight] while preserving aspect ratio, then pad
+  /// with gray (128, 128, 128) to fill.
+  ///
+  /// YOLO detection models are trained on letterboxed images; stretching
+  /// destroys detection accuracy.
+  img.Image _letterboxResize(img.Image image) {
+    final scale = math.min(
+      _inputWidth / image.width,
+      _inputHeight / image.height,
+    );
+    final newWidth = (image.width * scale).round();
+    final newHeight = (image.height * scale).round();
+
+    final resized = img.copyResize(
+      image,
+      width: newWidth,
+      height: newHeight,
+      interpolation: img.Interpolation.linear,
+    );
+
+    final letterboxed = img.Image(
+      width: _inputWidth,
+      height: _inputHeight,
+      numChannels: resized.numChannels,
+      format: resized.format,
+    );
+    img.fill(letterboxed, color: img.ColorRgb8(114, 114, 114));
+
+    final pasteX = (_inputWidth - newWidth) ~/ 2;
+    final pasteY = (_inputHeight - newHeight) ~/ 2;
+
+    for (var y = 0; y < newHeight; y++) {
+      for (var x = 0; x < newWidth; x++) {
+        letterboxed.setPixel(pasteX + x, pasteY + y, resized.getPixel(x, y));
+      }
+    }
+
+    AppLogger.debug(
+      'Letterbox: ${image.width}x${image.height} → '
+      '$newWidth' 'x$newHeight (scale ${scale.toStringAsFixed(4)}) '
+      'pasted at ($pasteX, $pasteY) into ${_inputWidth}x$_inputHeight',
+      tag: 'WEIGHT_DEBUG',
+    );
+
+    return letterboxed;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Prediction Parsing
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Parse detection model output [1, N, 6] into a probability vector over
+  /// [_numClasses].
+  ///
+  /// Each detection is [cx, cy, w, h, conf, class_id] (post‑processed
+  /// YOLO TFLite export).  Boxes below [_detectionConfThreshold] are
+  /// discarded.  The per‑class score is the maximum confidence among the
+  /// surviving boxes for that class.  Scores are converted to probabilities
+  /// via softmax so the downstream classification pipeline works unchanged.
+  List<double> _parseDetectionOutput(List<dynamic> output) {
+    final perClassMaxConf = List<double>.filled(_numClasses, 0.0);
+
+    final batch = output[0] as List<dynamic>;
+
+    var loggedCount = 0;
+    for (final box in batch) {
+      final values = (box as List<dynamic>).cast<double>();
+      final conf = values[4];
+
+      if (loggedCount < 5) {
+        AppLogger.debug(
+          '  det[$loggedCount]: box=[${values[0].toStringAsFixed(4)}, '
+          '${values[1].toStringAsFixed(4)}, ${values[2].toStringAsFixed(4)}, '
+          '${values[3].toStringAsFixed(4)}] '
+          'conf=${conf.toStringAsFixed(4)} classId=${values[5].toStringAsFixed(1)}',
+          tag: 'WEIGHT_DEBUG',
+        );
+        loggedCount++;
+      }
+
+      if (conf < _detectionConfThreshold) continue;
+
+      final classId = values[5].round();
+      if (classId < 0 || classId >= _numClasses) continue;
+
+      if (conf > perClassMaxConf[classId]) {
+        perClassMaxConf[classId] = conf;
+      }
+    }
+
+    final hasDetections = perClassMaxConf.any((v) => v > 0);
+    if (!hasDetections) {
+      AppLogger.debug(
+        'No detections above threshold $_detectionConfThreshold — '
+        'returning uniform distribution',
+        tag: 'WEIGHT_DEBUG',
+      );
+      return List<double>.filled(_numClasses, 1.0 / _numClasses);
+    }
+
+    return _softmax(perClassMaxConf);
+  }
 
   /// Convert raw logits to a probability distribution via softmax.
   ///
