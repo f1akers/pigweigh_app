@@ -43,7 +43,7 @@ dependencies:
   flutter_dotenv: ^6.0.0
 
   # AI / ML Inference
-  tflite_flutter: ^0.12.1
+  executorch_flutter: ^0.3.3
 
   # Camera (for pig weight capture)
   camera: ^0.11.3
@@ -79,7 +79,17 @@ flutter:
 
   assets:
     - assets/models/
-    - assets/models/pig_weight_estimation.tflite
+    - assets/models/pig_weight_estimation.pte
     - assets/labels/pig_weight_labels.txt
     - assets/images/
     - .env
+
+hooks:
+  user_defines:
+    executorch_flutter:
+      debug: false
+      build_mode: prebuilt
+      backends:
+        - xnnpack
+        - coreml
+        - mps

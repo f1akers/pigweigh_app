@@ -3,7 +3,7 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 part 'weight_estimation_model.freezed.dart';
 part 'weight_estimation_model.g.dart';
 
-/// The result of running TFLite inference on a single image (side view).
+/// The result of running ExecuTorch inference on a single image (side view).
 ///
 /// Contains the predicted weight class, its confidence, and whether the
 /// prediction is ambiguous (two or more classes with very similar confidence).

@@ -7,7 +7,7 @@ import '../../../../core/utils/logger.dart';
 import '../../data/models/weight_estimation_model.dart';
 import '../../data/providers/weight_providers.dart';
 
-/// Tab 1 — Capture top-view photo, run TFLite inference,
+/// Tab 1 — Capture top-view photo, run ExecuTorch inference,
 /// and trigger the final weight + price calculation.
 ///
 /// [onCalculateSuccess] is called after a successful calculate(), so the

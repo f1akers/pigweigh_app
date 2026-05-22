@@ -1,30 +1,31 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:executorch_flutter/executorch_flutter.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image/image.dart' as img;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
 
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/utils/logger.dart';
-import '../../../../services/ml/tflite_service.dart';
+import '../../../../services/ml/executorch_service.dart';
 import '../models/weight_estimation_model.dart';
 
 part 'weight_estimation_service.g.dart';
 
-/// Service that handles TFLite model inference for pig weight estimation.
+/// Service that handles ExecuTorch model inference for pig weight estimation.
 ///
 /// **Lifecycle:**
-/// 1. Call [initialize] once at app startup (loads labels + inspects model).
+/// 1. Call [initialize] once at app startup (loads labels).
 /// 2. Call [estimateFromImage] for the captured side-view photo.
 /// 3. Call [calculateEstimate] after the side view is processed.
 ///
 class WeightEstimationService {
-  WeightEstimationService({required TfliteService tfliteService})
-    : _tfliteService = tfliteService;
+  WeightEstimationService({required ExecutorchService executorchService})
+    : _executorchService = executorchService;
 
-  final TfliteService _tfliteService;
+  final ExecutorchService _executorchService;
 
   /// Weight labels in model output order (index → label string).
   List<String> _labels = [];
@@ -32,27 +33,19 @@ class WeightEstimationService {
   /// Parsed numeric weights corresponding to [_labels].
   List<double> _weights = [];
 
-  /// Model input dimensions discovered at load time.
-  int _inputHeight = 224;
-  int _inputWidth = 224;
-  int _inputChannels = 3;
-
-  /// Whether the model expects float32 (normalized 0–1) or uint8 (0–255).
-  bool _isFloat32Input = true;
-
   /// Number of output classes.
   int _numClasses = 0;
 
-  /// Whether the loaded model is a detection model (3D output) as opposed to
-  /// a classification model (2D output).
-  bool _isDetectionModel = false;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Hard-coded model parameters
+  // ═══════════════════════════════════════════════════════════════════════════
+  /// The exported ExecuTorch model is a YOLOv8 detection model at 640×640
+  /// with NCHW (channels-first) float32 input.
+  static const int _inputHeight = 640;
+  static const int _inputWidth = 640;
+  static const int _inputChannels = 3;
 
-  /// Actual model output shape.  Used to allocate the inference output buffer
-  /// when the model differs from the simple [1, _numClasses] shape that a
-  /// classification model produces.
-  List<int> _outputShape = [];
-
-  /// Confidence threshold for filtering detection boxes.
+  /// Confidence threshold for filtering YOLO detection anchors.
   static const double _detectionConfThreshold = 0.25;
 
   /// How many top predictions to retain in the result.
@@ -65,27 +58,25 @@ class WeightEstimationService {
   // Initialization
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Load labels from the asset file and inspect the model's tensor shapes.
+  /// Load labels from the asset file.
   ///
   /// Must be called once before any inference calls.
   Future<void> initialize() async {
     if (_isInitialized) return;
 
     await _loadLabels();
-    await _inspectModelShape();
     _isInitialized = true;
 
     AppLogger.info(
       'WeightEstimationService initialized — '
       '${_labels.length} classes, '
-      'input: ${_inputHeight}x$_inputWidth x$_inputChannels '
-      '(${_isFloat32Input ? "float32" : "uint8"}), '
-      'mode: ${_isDetectionModel ? "detection" : "classification"}',
+      'input: $_inputHeight×$_inputWidth x$_inputChannels '
+      'float32 (NCHW), mode: detection',
       tag: 'WEIGHT',
     );
   }
 
-  /// Parse the labels file. Each line is a weight class (e.g., "85kg").
+  /// Parse the labels file. Each line is a weight class (e.g., "16 KG_Side").
   /// Order must be preserved — line index matches model output index.
   Future<void> _loadLabels() async {
     final raw = await rootBundle.loadString(AppConstants.weightLabelsAsset);
@@ -104,82 +95,6 @@ class WeightEstimationService {
   /// Extract numeric weight from a label like "16 KG_Side" or "16 KG_Top".
   double _parseWeight(String label) {
     return double.parse(label.split(' ').first);
-  }
-
-  /// Inspect the loaded model's input/output tensors to determine
-  /// the expected image dimensions and data type.
-  Future<void> _inspectModelShape() async {
-    if (!_tfliteService.isModelLoaded) {
-      await _tfliteService.loadModel();
-    }
-
-    // Access the interpreter to read tensor metadata.
-    // TfliteService exposes the interpreter indirectly via runInference,
-    // but we need shape info. We'll read from the model asset directly.
-    try {
-      final interpreter = await Interpreter.fromAsset(
-        AppConstants.weightModelAsset,
-      );
-
-      final inputTensor = interpreter.getInputTensor(0);
-      final inputShape = inputTensor.shape; // e.g., [1, 224, 224, 3]
-      final inputType = inputTensor.type;
-      final inputParams = inputTensor.params; // quantization scale + zeroPoint
-
-      if (inputShape.length == 4) {
-        _inputHeight = inputShape[1];
-        _inputWidth = inputShape[2];
-        _inputChannels = inputShape[3];
-      }
-      _isFloat32Input = inputType == TensorType.float32;
-
-      final outputTensor = interpreter.getOutputTensor(0);
-      final outputShape = outputTensor.shape; // e.g., [1, 95] or [1, 300, 6]
-      final outputParams = outputTensor.params;
-
-      _outputShape = List<int>.from(outputShape);
-
-      if (outputShape.length == 3) {
-        _isDetectionModel = true;
-      } else if (outputShape.length >= 2) {
-        _isDetectionModel = false;
-        _numClasses = outputShape[1];
-      }
-
-      interpreter.close();
-
-      // ── CRITICAL DIAGNOSTIC ──────────────────────────────────────────────
-      // inputType tells us what the model's input tensor actually expects.
-      //   float32  → model may have internal preprocessing (Rescaling layer)
-      //              OR expects a specific normalized float range.
-      //   uint8    → quantized model; feed Uint8List [0, 255].
-      //   int8     → quantized model; feed Int8List (centered at zeroPoint).
-      //
-      // inputParams.scale / zeroPoint (only meaningful for quantized tensors):
-      //   If scale ≈ 0.00392 (≈1/255) and zp = 0 → uint8 model, input [0,255].
-      //   If scale ≈ 0.00784 (≈2/255) and zp = -128 → int8, input [-128,127].
-      //   If scale = 0 and zp = 0 → float32 with no quantization params.
-      //
-      // Run debug_model.py on the PC to test all normalizations definitively.
-      AppLogger.debug(
-        '═══ MODEL TENSOR METADATA ═══\n'
-        '  input  : shape=$inputShape  type=$inputType  '
-        'isFloat32=$_isFloat32Input\n'
-        '  input  : quantScale=${inputParams.scale}  '
-        'quantZeroPoint=${inputParams.zeroPoint}\n'
-        '  output : shape=$outputShape  classes=$_numClasses  '
-        'detection=$_isDetectionModel\n'
-        '  output : quantScale=${outputParams.scale}  '
-        'quantZeroPoint=${outputParams.zeroPoint}\n'
-        '═══════════════════════════════',
-        tag: 'WEIGHT_DEBUG',
-      );
-    } catch (e) {
-      AppLogger.warn(
-        'Could not inspect model shape, using defaults: $e',
-        tag: 'WEIGHT',
-      );
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -213,21 +128,14 @@ class WeightEstimationService {
     onProgress?.call(1, 0, 'Running inference...');
 
     // ── Preprocess & infer ────────────────────────────────────────────────
-    final tensor = await _preprocessImage(imagePath);
+    final inputTensor = await _preprocessImage(imagePath);
 
-    final List<double> rawOutput;
-    if (_isDetectionModel) {
-      final numBoxes = _outputShape[1];
-      final numValues = _outputShape[2];
-      final output = List.filled(numBoxes * numValues, 0.0)
-          .reshape([1, numBoxes, numValues]);
-      _tfliteService.runInference(tensor, output);
-      rawOutput = _parseDetectionOutput(output);
-    } else {
-      final output = List.filled(_numClasses, 0.0).reshape([1, _numClasses]);
-      _tfliteService.runInference(tensor, output);
-      rawOutput = (output[0] as List<dynamic>).cast<double>();
+    if (!_executorchService.isModelLoaded) {
+      await _executorchService.loadModel();
     }
+
+    final outputs = await _executorchService.forward([inputTensor]);
+    final rawOutput = _parseDetectionOutput(outputs);
 
     final rawMax = rawOutput.reduce(math.max);
     final rawSum = rawOutput.reduce((a, b) => a + b);
@@ -329,22 +237,17 @@ class WeightEstimationService {
   // Image Preprocessing
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Load an image from disk, resize to model dimensions, and
-  /// return the input tensor as raw float32 [0–255].
+  /// Load an image from disk, letterbox-resize to 640×640, and return the
+  /// input tensor as [TensorData] in NCHW float32 [0–255].
   ///
-  /// ## Why no external normalization?
-  /// The YOLO classification TFLite export bakes ÷255 normalization
-  /// INSIDE the TFLite graph as a preprocessing step. Applying
-  /// normalization externally would double-normalize: every pixel
-  /// collapses to near-zero, making the model produce near-uniform
-  /// probabilities (~1% confidence on every class).
+  /// ## Layout
+  /// ExecuTorch (PyTorch) expects channels-first order:
+  ///   [batch=1, channels=3, height=640, width=640]
   ///
-  /// Correct pipeline:
-  ///   Raw JPEG → decode → EXIF-orient → resize → float32 [0–255] → model
-  ///   (model internally: x/255 → YOLO classification layers → softmax)
-  Future<List<List<List<List<double>>>>> _preprocessImage(
-    String imagePath,
-  ) async {
+  /// ## Normalization
+  /// The YOLO model has internal preprocessing baked into the graph, so we
+  /// pass raw pixel values in [0, 255] and do NOT divide by 255 externally.
+  Future<TensorData> _preprocessImage(String imagePath) async {
     final bytes = await File(imagePath).readAsBytes();
     var image = img.decodeImage(bytes);
 
@@ -361,22 +264,10 @@ class WeightEstimationService {
       tag: 'WEIGHT_DEBUG',
     );
 
-    if (_isDetectionModel) {
-      image = _letterboxResize(image);
-    } else {
-      image = img.copyResize(
-        image,
-        width: _inputWidth,
-        height: _inputHeight,
-        interpolation: img.Interpolation.linear,
-      );
-    }
+    // Always letterbox for detection models.
+    image = _letterboxResize(image);
 
-    // ── Pixel-level sanity check (top-left 3×3 sample) ──────────────────────
-    // Shows the raw channel values coming out of the image package.
-    // Expected for a typical camera photo: values in [0–255].
-    // If you see values in [0.0–1.0] the image package is using float32
-    // format and you must multiply by 255 before building the tensor.
+    // ── Pixel-level sanity check (top-left sample) ──────────────────────
     final samplePixel = image.getPixel(0, 0);
     AppLogger.debug(
       'Sample pixel [0,0] → r:${samplePixel.r.toStringAsFixed(1)} '
@@ -386,59 +277,47 @@ class WeightEstimationService {
       tag: 'WEIGHT_DEBUG',
     );
 
-    // Build the 4D input tensor [1, H, W, 3] as raw float32 [0–255].
-    //
-    // DO NOT normalize here. The YOLO model's baked-in preprocessing handles
-    // ÷255 internally. Passing pre-normalized values means the model
-    // applies the normalization a second time, collapsing all activations.
-    final input = List.generate(
-      1,
-      (_) => List.generate(
-        _inputHeight,
-        (y) => List.generate(_inputWidth, (x) {
-          final pixel = image!.getPixel(x, y);
-          // pixel.r/g/b are raw channel values [0–maxChannelValue].
-          // For uint8 JPEG this is [0–255]; for float32 images it may be
-          // [0.0–1.0] — the pixel sanity-check log above will reveal which.
-          return [pixel.r.toDouble(), pixel.g.toDouble(), pixel.b.toDouble()];
-        }),
-      ),
-    );
+    // Build flat NCHW float32 tensor [1, 3, 640, 640].
+    final pixelCount = _inputHeight * _inputWidth;
+    final floatData = Float32List(_inputChannels * pixelCount);
 
-    // ── Input-tensor statistics ──────────────────────────────────────────────
-    // After the fix, expect: min ≈ 0, max ≈ 255, mean ≈ 100–180.
-    // If you still see min/max in [0.0–1.0], the image is float32 format
-    // → multiply pixel values by 255 inside the loop above.
+    for (var y = 0; y < _inputHeight; y++) {
+      for (var x = 0; x < _inputWidth; x++) {
+        final pixel = image.getPixel(x, y);
+        final idx = y * _inputWidth + x;
+        floatData[0 * pixelCount + idx] = pixel.r.toDouble();
+        floatData[1 * pixelCount + idx] = pixel.g.toDouble();
+        floatData[2 * pixelCount + idx] = pixel.b.toDouble();
+      }
+    }
+
+    // ── Input-tensor statistics ──────────────────────────────────────────
     double tensorMin = double.infinity;
     double tensorMax = double.negativeInfinity;
     double tensorSum = 0;
-    int tensorCount = 0;
-    for (final batch in input) {
-      for (final row in batch) {
-        for (final col in row) {
-          for (final v in col) {
-            if (v < tensorMin) tensorMin = v;
-            if (v > tensorMax) tensorMax = v;
-            tensorSum += v;
-            tensorCount++;
-          }
-        }
-      }
+    for (final v in floatData) {
+      if (v < tensorMin) tensorMin = v;
+      if (v > tensorMax) tensorMax = v;
+      tensorSum += v;
     }
     AppLogger.debug(
       'Input tensor stats — '
       'min: ${tensorMin.toStringAsFixed(1)}, '
       'max: ${tensorMax.toStringAsFixed(1)}, '
-      'mean: ${(tensorSum / tensorCount).toStringAsFixed(1)}',
+      'mean: ${(tensorSum / floatData.length).toStringAsFixed(1)}',
       tag: 'WEIGHT_DEBUG',
     );
 
-    return input;
+    return TensorData(
+      shape: [1, _inputChannels, _inputHeight, _inputWidth],
+      dataType: TensorType.float32,
+      data: floatData.buffer.asUint8List(),
+    );
   }
 
   /// Letterbox-resize for detection models: scale the image to fit within
   /// [_inputWidth]×[_inputHeight] while preserving aspect ratio, then pad
-  /// with gray (128, 128, 128) to fill.
+  /// with gray (114, 114, 114) to fill.
   ///
   /// YOLO detection models are trained on letterboxed images; stretching
   /// destroys detection accuracy.
@@ -488,42 +367,80 @@ class WeightEstimationService {
   // Prediction Parsing
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Parse detection model output [1, N, 6] into a probability vector over
-  /// [_numClasses].
+  /// Parse YOLOv8 raw detection output from ExecuTorch into a probability
+  /// vector over [_numClasses].
   ///
-  /// Each detection is [cx, cy, w, h, conf, class_id] (post‑processed
-  /// YOLO TFLite export).  Boxes below [_detectionConfThreshold] are
-  /// discarded.  The per‑class score is the maximum confidence among the
-  /// surviving boxes for that class.  Scores are converted to probabilities
-  /// via softmax so the downstream classification pipeline works unchanged.
-  List<double> _parseDetectionOutput(List<dynamic> output) {
+  /// The model returns shape [1, numChannels, numAnchors] where:
+  ///   numChannels = 4 bbox regression values + numClasses class logits
+  ///   numAnchors  = 8400 (YOLOv8 default)
+  ///
+  /// For each anchor we:
+  /// 1. Read class logits, apply sigmoid to get probabilities.
+  /// 2. Find the max class probability for that anchor.
+  /// 3. If it exceeds the threshold, update the per-class max confidence.
+  ///
+  /// Finally we softmax the per-class max confidences so downstream code
+  /// receives a valid probability distribution.
+  List<double> _parseDetectionOutput(List<TensorData> outputs) {
+    if (outputs.isEmpty) {
+      throw StateError('Model returned no outputs');
+    }
+
+    final outputTensor = outputs[0];
+    final shape = outputTensor.shape;
+
+    AppLogger.debug(
+      'ExecuTorch output shape: $shape  dtype: ${outputTensor.dataType}',
+      tag: 'WEIGHT_DEBUG',
+    );
+
+    if (shape.length != 3 || shape[0] != 1) {
+      throw StateError(
+        'Unexpected output shape: $shape. Expected [1, channels, anchors].',
+      );
+    }
+
+    if (outputTensor.dataType != TensorType.float32) {
+      throw StateError(
+        'Unexpected output dtype: ${outputTensor.dataType}. Expected float32.',
+      );
+    }
+
+    final numChannels = shape[1]!;
+    final numAnchors = shape[2]!;
+    final numClasses = numChannels - 4;
+
+    if (numClasses != _numClasses) {
+      AppLogger.warn(
+        'Model class count ($numClasses) does not match label count ($_numClasses). '
+        'Using min($_numClasses, $numClasses).',
+        tag: 'WEIGHT',
+      );
+    }
+    final effectiveClasses = math.min(_numClasses, numClasses);
+
+    final flatOutput = outputTensor.data.buffer.asFloat32List();
     final perClassMaxConf = List<double>.filled(_numClasses, 0.0);
 
-    final batch = output[0] as List<dynamic>;
+    for (var a = 0; a < numAnchors; a++) {
+      // Channel-major layout: offset for [0, c, a] = c * numAnchors + a
+      var maxClsProb = 0.0;
+      var maxClsIdx = 0;
 
-    var loggedCount = 0;
-    for (final box in batch) {
-      final values = (box as List<dynamic>).cast<double>();
-      final conf = values[4];
-
-      if (loggedCount < 5) {
-        AppLogger.debug(
-          '  det[$loggedCount]: box=[${values[0].toStringAsFixed(4)}, '
-          '${values[1].toStringAsFixed(4)}, ${values[2].toStringAsFixed(4)}, '
-          '${values[3].toStringAsFixed(4)}] '
-          'conf=${conf.toStringAsFixed(4)} classId=${values[5].toStringAsFixed(1)}',
-          tag: 'WEIGHT_DEBUG',
-        );
-        loggedCount++;
+      for (var c = 0; c < numClasses; c++) {
+        final offset = (4 + c) * numAnchors + a;
+        final logit = flatOutput[offset];
+        final prob = 1.0 / (1.0 + math.exp(-logit)); // sigmoid
+        if (prob > maxClsProb) {
+          maxClsProb = prob;
+          maxClsIdx = c;
+        }
       }
 
-      if (conf < _detectionConfThreshold) continue;
-
-      final classId = values[5].round();
-      if (classId < 0 || classId >= _numClasses) continue;
-
-      if (conf > perClassMaxConf[classId]) {
-        perClassMaxConf[classId] = conf;
+      if (maxClsProb > _detectionConfThreshold && maxClsIdx < effectiveClasses) {
+        if (maxClsProb > perClassMaxConf[maxClsIdx]) {
+          perClassMaxConf[maxClsIdx] = maxClsProb;
+        }
       }
     }
 
@@ -544,10 +461,6 @@ class WeightEstimationService {
   ///
   /// Uses the numerically stable max-subtraction form:
   ///   softmax(x_i) = exp(x_i − max) / Σ exp(x_j − max)
-  ///
-  /// The YOLO model has softmax baked in, so this is only used as a
-  /// safety-net fallback if the output unexpectedly doesn't sum to ≈ 1.0
-  /// (e.g., a mismatched model was loaded by mistake).
   List<double> _softmax(List<double> logits) {
     if (logits.isEmpty) return [];
     final maxLogit = logits.reduce(math.max);
@@ -597,6 +510,6 @@ class WeightEstimationService {
 @Riverpod(keepAlive: true)
 WeightEstimationService weightEstimationService(Ref ref) {
   return WeightEstimationService(
-    tfliteService: ref.watch(tfliteServiceProvider),
+    executorchService: ref.watch(executorchServiceProvider),
   );
 }
